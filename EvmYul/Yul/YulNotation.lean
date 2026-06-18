@@ -159,6 +159,7 @@ def parseFunction : String → PrimOp ⊕ Identifier
   | "shl" => .inl .SHL
   | "shr" => .inl .SHR
   | "sar" => .inl .SAR
+  | "clz" => .inl .CLZ
   | "keccak256" => .inl .KECCAK256
   | "address" => .inl .ADDRESS
   | "balance" => .inl .BALANCE

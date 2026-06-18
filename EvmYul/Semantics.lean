@@ -277,6 +277,8 @@ def step {τ : OperationType} (op : Operation τ) (arg : Option (UInt256 × Nat)
       dispatchBinary τ (flip UInt256.shiftRight)
     | τ, .SAR =>
       dispatchBinary τ UInt256.sar
+    | τ, .CLZ =>
+      dispatchUnary τ UInt256.clz
 
     | τ, .KECCAK256 =>
       dispatchBinaryMachineStateOp' τ MachineState.keccak256
