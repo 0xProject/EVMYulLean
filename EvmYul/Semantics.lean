@@ -113,7 +113,7 @@ private def dispatchMachineStateOp (τ : OperationType) (op : MachineState → U
     | .EVM => EVM.machineStateOp op
     | .Yul => Yul.machineStateOp op
 
-private def dispatchUnaryStateOp (τ : OperationType) (op : State τ → UInt256 → State τ × UInt256) : Transformer τ :=
+def dispatchUnaryStateOp (τ : OperationType) (op : State τ → UInt256 → State τ × UInt256) : Transformer τ :=
   match τ with
     | .EVM => EVM.unaryStateOp op
     | .Yul => Yul.unaryStateOp op
@@ -134,7 +134,7 @@ private def dispatchQuaternaryCopyOp
     | .EVM => EVM.quaternaryCopyOp op
     | .Yul => Yul.quaternaryCopyOp op
 
-private def dispatchBinaryMachineStateOp
+def dispatchBinaryMachineStateOp
  (τ : OperationType) (op : MachineState → UInt256 → UInt256 → MachineState) :
   Transformer τ
 :=
@@ -150,7 +150,7 @@ private def dispatchTernaryMachineStateOp
     | .EVM => EVM.ternaryMachineStateOp op
     | .Yul => Yul.ternaryMachineStateOp op
 
-private def dispatchBinaryMachineStateOp'
+def dispatchBinaryMachineStateOp'
  (τ : OperationType) (op : MachineState → UInt256 → UInt256 → UInt256 × MachineState) :
   Transformer τ
 :=

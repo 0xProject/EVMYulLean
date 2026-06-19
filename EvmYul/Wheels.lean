@@ -10,8 +10,42 @@ namespace EvmYul
 def chainId : ℕ := 1
 
 def UInt256.toByteArray (val : UInt256) : ByteArray :=
-  let b := BE val.toNat
-  ffi.ByteArray.zeroes ⟨32 - b.size⟩ ++ b
+  let b := toBytesBigEndian val.toNat
+  List.toByteArray (List.replicate (32 - b.length) 0 ++ b)
+
+@[simp]
+theorem List.toByteArray_loop_data_toList (xs : List UInt8) (acc : ByteArray) :
+    (List.toByteArray.loop xs acc).data.toList = acc.data.toList ++ xs := by
+  induction xs generalizing acc with
+  | nil => simp [List.toByteArray.loop]
+  | cons b bs ih =>
+      simp [List.toByteArray.loop, ih, ByteArray.push, Array.toList_push, List.append_assoc]
+
+@[simp]
+theorem List.toByteArray_data_toList (xs : List UInt8) :
+    (List.toByteArray xs).data.toList = xs := by
+  simp [List.toByteArray, ByteArray.empty, ByteArray.emptyWithCapacity]
+
+@[simp]
+theorem UInt256.toByteArray_data_toList (val : UInt256) :
+    val.toByteArray.data.toList =
+      List.replicate (32 - (toBytesBigEndian val.toNat).length) 0 ++
+        toBytesBigEndian val.toNat := by
+  unfold UInt256.toByteArray
+  simp
+
+@[simp]
+theorem UInt256.toByteArray_size (val : UInt256) : val.toByteArray.size = 32 := by
+  change val.toByteArray.data.size = 32
+  rw [← Array.length_toList, UInt256.toByteArray_data_toList]
+  have h := toBytesBigEndian_UInt256_len_le val
+  simp [Nat.sub_add_cancel h]
+
+@[simp]
+theorem UInt256.fromByteArrayBigEndian_toByteArray (val : UInt256) :
+    fromByteArrayBigEndian val.toByteArray = val.toNat := by
+  unfold UInt256.toByteArray fromByteArrayBigEndian
+  simp
 
 abbrev Literal := UInt256
 
@@ -189,16 +223,13 @@ def ByteArray.ofBlob (self : Blob) : Except String ByteArray := do
 
 def ByteArray.readBytes (source : ByteArray) (start size : ℕ) : ByteArray :=
   let read :=
-    if start < 2^64 && size < 2^64 then
-      source.copySlice start empty 0 size
-    else
-      ⟨⟨source.toList.drop start |>.take size⟩⟩
+    ⟨⟨source.data.toList.drop start |>.take size⟩⟩
   read ++ ffi.ByteArray.zeroes ⟨size - read.size⟩
 
 def ByteArray.readWithoutPadding (source : ByteArray) (addr len : ℕ) : ByteArray :=
   if addr ≥ source.size then .empty else
-    let len := min len source.size
-    source.extract addr (addr + len)
+    let len := min len (source.size - addr)
+    ⟨⟨source.data.toList.drop addr |>.take len⟩⟩
 
 private def inf := 2^66
 
@@ -352,18 +383,8 @@ def ByteArray.write
   : ByteArray
 :=
   if len = 0 then dest else
-    if sourceAddr ≥ source.size then
-      let len := min len (dest.size - destAddr)
-      let destAddr := min destAddr dest.size
-      (ffi.ByteArray.zeroes ⟨len⟩).copySlice 0 dest destAddr len
-    else
-      let practicalLen := min len (source.size - sourceAddr)
-      let endPaddingAddr := min dest.size (destAddr + len)
-      let sourcePaddingLength : ℕ := endPaddingAddr - (destAddr + practicalLen)
-      let sourcePadding := ffi.ByteArray.zeroes ⟨sourcePaddingLength⟩
-      let destPaddingLength : ℕ := destAddr - dest.size
-      let destPadding := ffi.ByteArray.zeroes ⟨destPaddingLength⟩
-      (source ++ sourcePadding).copySlice sourceAddr
-        (dest ++ destPadding)
-        destAddr
-        (practicalLen + sourcePaddingLength)
+    let sourceBytes := source.data.toList.drop sourceAddr |>.take len
+    let writeBytes := sourceBytes ++ List.replicate (len - sourceBytes.length) 0
+    let destBytes := dest.data.toList
+    let pre := destBytes ++ List.replicate (destAddr - destBytes.length) 0
+    ⟨⟨pre.take destAddr ++ writeBytes ++ destBytes.drop (destAddr + len)⟩⟩

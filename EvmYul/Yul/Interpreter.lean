@@ -436,25 +436,29 @@ def primCall (fuel : ℕ) (s₀ : State) (prim : Operation .Yul) (args : List Li
     match fuel with
       | 0 => .error .OutOfFuel
       | .succ fuel' =>
-        match s.sharedState.accountMap.find? s.executionEnv.codeOwner with
-        | .none => .error (.MissingContract (s!"{s.executionEnv.codeOwner}")) 
-        | .some yulContract =>
-          let code : YulContract := codeOverride.getD yulContract.code
-          
-          let fOpt : Option FunctionDefinition :=
-            match yulFunctionNameOption with
-              | .none => .some (FunctionDefinition.Def [] [] [code.dispatcher])
-              | .some yulFunctionName =>
-                  code.functions.lookup yulFunctionName
-          match fOpt with
-          | .none => .error (.MissingContractFunction (yulFunctionNameOption.getD ".none"))
-          | .some f =>
-            let s₁ := 👌 s.initcall f.params args
-            match exec fuel' (.Block f.body) codeOverride s₁ with
-              | .error e => .error e
-              | .ok s₂ =>
-                let s₃ := s₂.reviveJump.overwrite? s |>.setStore s
-                .ok (s₃, List.map s₂.lookup! f.rets)
+        match s with
+        | .OutOfFuel => .error .OutOfFuel
+        | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
+        | .Ok sharedState _ =>
+          match sharedState.accountMap.find? sharedState.executionEnv.codeOwner with
+          | .none => .error (.MissingContract (s!"{sharedState.executionEnv.codeOwner}"))
+          | .some yulContract =>
+            let code : YulContract := codeOverride.getD yulContract.code
+
+            let fOpt : Option FunctionDefinition :=
+              match yulFunctionNameOption with
+                | .none => .some (FunctionDefinition.Def [] [] [code.dispatcher])
+                | .some yulFunctionName =>
+                    code.functions.lookup yulFunctionName
+            match fOpt with
+            | .none => .error (.MissingContractFunction (yulFunctionNameOption.getD ".none"))
+            | .some f =>
+              let s₁ := 👌 s.initcall f.params args
+              match exec fuel' (.Block f.body) codeOverride s₁ with
+                | .error e => .error e
+                | .ok s₂ =>
+                  let s₃ := s₂.reviveJump.overwrite? s |>.setStore s
+                  .ok (s₃, List.map s₂.lookup! f.rets)
 
   /--
     `callDispatcher` calls the dispatcher of an external contract.
@@ -522,8 +526,13 @@ def primCall (fuel : ℕ) (s₀ : State) (prim : Operation .Yul) (args : List Li
           | .ok s₂ =>
             match execSwitchCases fuel' codeOverride s cases' with
             | .error e => .error e
-            | .ok s₃ =>
-              .ok ((val, .ok s₂) :: s₃)
+              | .ok s₃ =>
+                .ok ((val, .ok s₂) :: s₃)
+
+  def selectSwitchCase (cond : Literal) : List (Literal × List Stmt) → Option (List Stmt)
+    | [] => .none
+    | (val, stmts) :: cases' =>
+      if val = cond then .some stmts else selectSwitchCase cond cases'
 
   /--
     `eval` evaluates an expression.
@@ -599,13 +608,9 @@ def primCall (fuel : ℕ) (s₀ : State) (prim : Operation .Yul) (args : List Li
           match eval fuel' cond codeOverride s with
             | .error e => .error e
             | .ok (s₁, cond) =>
-              match execSwitchCases fuel' codeOverride s₁ cases' with
-              | .error e => .error e  
-              | .ok branches =>
-                match exec fuel' (.Block default') codeOverride s₁ with
-                | .error e => .error e
-                | .ok s₂ =>
-                  (List.foldr (λ (valᵢ, sᵢ) s ↦ if valᵢ = cond then sᵢ else s) (.ok s₂) branches)
+              match selectSwitchCase cond cases' with
+              | .some stmts => exec fuel' (.Block stmts) codeOverride s₁
+              | .none => exec fuel' (.Block default') codeOverride s₁
 
         -- A `Break` or `Continue` in the pre or post is a compiler error,
         -- so we assume it can't happen and don't modify the state in these

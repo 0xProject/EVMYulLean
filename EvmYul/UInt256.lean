@@ -29,7 +29,7 @@ instance : ToString UInt256 where
 
 namespace UInt256
 
-def ofNat (n : ℕ) : UInt256 := Id.run do
+def ofNat (n : ℕ) : UInt256 :=
   ⟨Fin.ofNat _ n⟩
 
 def toNat (u : UInt256) : ℕ := u.val.val
@@ -163,7 +163,7 @@ instance (a b : UInt256) : Decidable (a ≤ b) := UInt256.decLe a b
 instance : Max UInt256 := maxOfLe
 instance : Min UInt256 := minOfLe
 
-def eq0 (a : UInt256) : Bool := a == ⟨0⟩
+def eq0 (a : UInt256) : Bool := decide (a = ⟨0⟩)
 
 def byteAt (a b : UInt256) : UInt256 :=
   if a > ⟨31⟩ then ⟨0⟩ else
@@ -266,7 +266,7 @@ def fromBytes' : List UInt8 → ℕ
 | b :: bs => b.toFin.val + 2^8 * fromBytes' bs
 
 def fromBytesBigEndian : List UInt8 → ℕ := fromBytes' ∘ List.reverse
-def fromByteArrayBigEndian (b : ByteArray) : ℕ := fromBytesBigEndian b.toList
+def fromByteArrayBigEndian (b : ByteArray) : ℕ := fromBytesBigEndian b.data.toList
 
 variable {bs : List UInt8}
          {n : ℕ}
@@ -304,6 +304,11 @@ private def toBytes' : ℕ → List UInt8
 
 def toBytesBigEndian : ℕ → List UInt8 := List.reverse ∘ toBytes'
 
+@[simp]
+lemma toBytesBigEndian_128 : toBytesBigEndian 128 = [UInt8.ofNat 128] := by
+  simp [toBytesBigEndian, toBytes', UInt8.size]
+  decide
+
 -- | If n < 2⁸ᵏ, then (toBytes' n).length ≤ k.
 private lemma toBytes'_le {k : ℕ} (h : n < 2 ^ (8 * k)) : (toBytes' n).length ≤ k := by
   induction k generalizing n with
@@ -323,6 +328,12 @@ private lemma toBytes'_le {k : ℕ} (h : n < 2 ^ (8 * k)) : (toBytes' n).length 
 
 -- | If n < 2²⁵⁶, then (toBytes' n).length ≤ 32.
 private lemma toBytes'_UInt256_le (h : n < UInt256.size) : (toBytes' n).length ≤ 32 := toBytes'_le h
+
+lemma toBytesBigEndian_UInt256_len_le (val : UInt256) :
+    (toBytesBigEndian val.toNat).length ≤ 32 := by
+  unfold toBytesBigEndian
+  simp only [Function.comp_apply, List.length_reverse]
+  exact toBytes'_UInt256_le val.val.isLt
 
 -- | Zero-pad a list of bytes up to some length, adding the zeroes on the right.
 private def zeroPadBytes (n : ℕ) (bs : List UInt8) : List UInt8 :=
@@ -360,6 +371,20 @@ private lemma fromBytes'_toBytes' {x : ℕ} : fromBytes' (toBytes' x) = x := by
     rw [fromBytes'_toBytes']
     simp [UInt8.size, add_comm]
     apply Nat.div_add_mod
+
+@[simp]
+lemma fromBytesBigEndian_toBytesBigEndian (x : ℕ) :
+    fromBytesBigEndian (toBytesBigEndian x) = x := by
+  unfold fromBytesBigEndian toBytesBigEndian
+  simp [fromBytes'_toBytes']
+
+@[simp]
+lemma fromBytesBigEndian_zeroes_append (n : ℕ) (bs : List UInt8) :
+    fromBytesBigEndian (List.replicate n 0 ++ bs) = fromBytesBigEndian bs := by
+  unfold fromBytesBigEndian
+  change fromBytes' ((List.replicate n 0 ++ bs).reverse) = fromBytes' bs.reverse
+  rw [List.reverse_append]
+  simp [extend_bytes_zero]
 
 def fromBytes! (bs : List UInt8) : ℕ := fromBytes' (bs.take 32)
 
