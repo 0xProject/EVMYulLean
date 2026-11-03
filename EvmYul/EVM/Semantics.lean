@@ -96,13 +96,19 @@ def fetchInstr (I : EvmYul.ExecutionEnv .EVM) (pc : UInt256) :
                Except EVM.ExecutionException (Operation .EVM × Option (UInt256 × Nat)) :=
   decode I.code pc |>.option (.error .StackUnderflow) Except.ok
 
-partial def D_J_aux (c : ByteArray) (i : UInt256) (result : Array UInt256) : Array UInt256 :=
-  match c.get? i.toNat >>= EvmYul.EVM.parseInstr with
-    | none => result
-    | some cᵢ => D_J_aux c (N i cᵢ) (if cᵢ = .JUMPDEST then result.push i else result)
+/-- Fuel-bounded (not `partial`) so that the kernel can evaluate it. `c.size + 1` steps are enough,
+since every step moves `i` past one byte and `c.get?` fails beyond `c.size`. -/
+def D_J_aux (c : ByteArray) (i : UInt256) (result : Array UInt256) : Nat → Array UInt256
+  | 0 => result
+  | n + 1 =>
+    match c.get? i.toNat >>= EvmYul.EVM.parseInstr with
+      | none => result
+      | some cᵢ => D_J_aux c (N i cᵢ) (if cᵢ = .JUMPDEST then result.push i else result) n
 
 def D_J (c : ByteArray) (i : UInt256) : Array UInt256 :=
-  D_J_aux c i #[]
+  D_J_aux c i #[] (c.size + 1)
+
+example : D_J ⟨#[0x5b, 0x60, 0x5b, 0x5b]⟩ ⟨0⟩ = #[⟨0⟩, ⟨3⟩] := by decide
 
 private def BitVec.ofFn {k} (x : Fin k → Bool) : BitVec k :=
   BitVec.ofNat k (natOfBools (Vector.ofFn x))
