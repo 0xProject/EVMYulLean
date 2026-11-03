@@ -52,7 +52,7 @@ def Wverylow : List (Operation .EVM) := [
     ]
 
 def Wlow : List (Operation .EVM) := [
-  .MUL, .DIV, .SDIV, .MOD, .SMOD, .SIGNEXTEND, .SELFBALANCE
+  .MUL, .DIV, .SDIV, .MOD, .SMOD, .SIGNEXTEND, .SELFBALANCE, .CLZ
 ]
 
 def Wmid : List (Operation .EVM) := [
@@ -292,6 +292,8 @@ def memoryExpansionCost (s : EVM.State) (instr : Operation .EVM) : ℕ :=
         .ofNat <| MachineState.M m s.stack[4]!.toNat s.stack[5]!.toNat
       | .RETURN | .REVERT => .ofNat <| MachineState.M s.toMachineState.activeWords.toNat s.stack[0]!.toNat s.stack[1]!.toNat
       | _ => s.toMachineState.activeWords
+
+example (s : EVM.State) : C' s .CLZ = 5 := by rfl
 
 end Gas
 
