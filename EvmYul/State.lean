@@ -1,4 +1,4 @@
-import Batteries.Data.RBMap
+import Batteries.Recycling.RBTree
 import Mathlib.Data.Finset.Basic
 
 import EvmYul.State.ExecutionEnv
@@ -32,7 +32,7 @@ structure State (τ : OperationType) where
   executionEnv        : ExecutionEnv τ
   blocks              : ProcessedBlocks
   genesisBlockHeader  : BlockHeader
-  createdAccounts     : Batteries.RBSet AccountAddress compare
+  createdAccounts     : RBTree.RBSet AccountAddress compare
 deriving Inhabited
 
 def State.blockHashes {τ} (self : State τ) : Array UInt256 :=

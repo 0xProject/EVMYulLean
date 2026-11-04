@@ -177,9 +177,8 @@ def Cgascap (t r : AccountAddress) (val g : UInt256) (σ : AccountMap .EVM) (μ 
     g.toNat
 
 def Ccallgas (t r : AccountAddress) (val g : UInt256) (σ : AccountMap .EVM) (μ : MachineState) (A : Substate) : ℕ :=
-  match val with
-    | ⟨0⟩ => Cgascap t r val g σ μ A
-    | _ => Cgascap t r val g σ μ A + GasConstants.Gcallstipend
+  if val = ⟨0⟩ then Cgascap t r val g σ μ A
+  else Cgascap t r val g σ μ A + GasConstants.Gcallstipend
 
 /--
 NB Assumes stack coherence.
