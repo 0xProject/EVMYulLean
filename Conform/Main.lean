@@ -58,7 +58,7 @@ def testFiles (root               : System.FilePath)
       λ (json, filepath) ↦
         match json.getObj? with
         | .error _ => panic! "Malformed test json."
-        | .ok x => (filepath, x.toArray.map Sigma.fst |>.filter isToBeTested)  
+        | .ok x => (filepath, x.toArray.map Prod.fst |>.filter isToBeTested)
 
   let mut tasks : Array (Task _) := .empty
   let mut thread := 0
@@ -88,7 +88,7 @@ def testFiles (root               : System.FilePath)
 
 def nproc : IO Nat := do
   let out ← IO.Process.output {cmd := "nproc", stdin := .null}
-  return out.stdout.trim.toNat? |>.getD 1
+  return out.stdout.trimAscii.toString.toNat? |>.getD 1
 
 def main (args : List String) : IO UInt32 := do
   let NumThreads : ℕ := args.head? <&> String.toNat! |>.getD (←nproc)
