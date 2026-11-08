@@ -106,7 +106,7 @@ def gasLimit {τ} (self : State τ) : UInt256 :=
 def chainId {τ} (_ : State τ) : UInt256 := .ofNat EvmYul.chainId
 
 def selfbalance {τ} (self : State τ) : UInt256 :=
-  Batteries.RBMap.find? self.accountMap self.executionEnv.codeOwner |>.elim ⟨0⟩ (·.balance)
+  RBTree.RBMap.find? self.accountMap self.executionEnv.codeOwner |>.elim ⟨0⟩ (·.balance)
 
 def setCode (self : State .EVM) (code : ByteArray) : State .EVM :=
   { self with executionEnv.code := code }

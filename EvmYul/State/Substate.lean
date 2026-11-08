@@ -1,4 +1,4 @@
-import Batteries.Data.RBMap
+import Batteries.Recycling.RBTree
 import EvmYul.UInt256
 import EvmYul.Wheels
 import EvmYul.State.Account
@@ -7,7 +7,7 @@ namespace EvmYul
 
 /--
 Not important for reasoning about Substate, this is currently done to get some nice performance properties
-of the `Batteries.RBMap`.
+of the `RBTree.RBMap`.
 
 TODO - to reason about the model, we will be better off with `Finset` or some such -
 without the requirement of ordering.
@@ -47,11 +47,11 @@ The `Substate` `A`. Section 6.1.
 - `logSeries`          `Aₗ`
 -/
 structure Substate where
-  selfDestructSet     : Batteries.RBSet AccountAddress compare
-  touchedAccounts     : Batteries.RBSet AccountAddress compare
+  selfDestructSet     : RBTree.RBSet AccountAddress compare
+  touchedAccounts     : RBTree.RBSet AccountAddress compare
   refundBalance       : UInt256
-  accessedAccounts    : Batteries.RBSet AccountAddress compare
-  accessedStorageKeys : Batteries.RBSet (AccountAddress × UInt256) Substate.storageKeysCmp
+  accessedAccounts    : RBTree.RBSet AccountAddress compare
+  accessedStorageKeys : RBTree.RBSet (AccountAddress × UInt256) Substate.storageKeysCmp
   logSeries           : LogSeries
   deriving BEq, Inhabited, Repr
 

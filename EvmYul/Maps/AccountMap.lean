@@ -17,7 +17,7 @@ a'la `Finmap`.
 TODO - All of this is very ugly.
 -/
 
-import Batteries.Data.RBMap
+import Batteries.Recycling.RBTree
 
 import EvmYul.Wheels
 
@@ -30,7 +30,7 @@ namespace EvmYul
 
 section RemoveLater
 
-abbrev AddrMap (α : Type) [Inhabited α] := Batteries.RBMap AccountAddress α compare
+abbrev AddrMap (α : Type) [Inhabited α] := RBTree.RBMap AccountAddress α compare
 abbrev AccountMap (τ : OperationType) := AddrMap (Account τ)
 abbrev PersistentAccountMap (τ : OperationType) := AddrMap (PersistentAccountState τ)
 def AccountMap.toPersistentAccountMap (τ : OperationType) (a : AccountMap τ) : PersistentAccountMap τ :=

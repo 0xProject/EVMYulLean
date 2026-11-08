@@ -22,7 +22,7 @@ import EvmYul.SpongeHash.Keccak256
 --
 
 import Mathlib.Data.BitVec
-import Mathlib.Data.Array.Defs
+import Init.Data.Array.Lemmas
 import Mathlib.Data.Finmap
 import Mathlib.Data.List.Defs
 import EvmYul.Data.Stack
@@ -221,7 +221,7 @@ def step {τ : OperationType} (op : Operation τ) (arg : Option (UInt256 × Nat)
     match τ with
       | .EVM => dbg_trace op.pretty; pure ()
       | .Yul => dbg_trace op.pretty; pure ()
-  match τ, op with
+  return match τ, op with
     -- TODO: Revisit STOP, this is likely not the best way to do it.
     | τ, .STOP =>
       match τ with

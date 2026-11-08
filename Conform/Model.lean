@@ -33,14 +33,14 @@ instance : IsTrans ((_ : UInt256) × UInt256) (· ≤ ·) where
     unfold LE.le instLESigmaUInt256_conform at h₁ h₂ ⊢; simp at *
     aesop (config := {warnOnNonterminal := false}) <;> omega
 
-instance : IsAntisymm ((_ : UInt256) × UInt256) (· ≤ ·) where
+instance : Std.Antisymm (α := (_ : UInt256) × UInt256) (· ≤ ·) where
   antisymm a b h₁ h₂ := by
     rcases a with ⟨⟨a, ha⟩, ⟨a', ha'⟩⟩
     rcases b with ⟨⟨b, hb⟩, ⟨b', hb'⟩⟩
     unfold LE.le instLESigmaUInt256_conform at h₁ h₂; simp at *
     aesop (config := {warnOnNonterminal := false}) <;> omega
 
-instance : IsTotal ((_ : UInt256) × UInt256) (· ≤ ·) where
+instance : Std.Total (α := (_ : UInt256) × UInt256) (· ≤ ·) where
   total a b := by
     rcases a with ⟨⟨a, ha⟩, ⟨a', ha'⟩⟩
     rcases b with ⟨⟨b, hb⟩, ⟨b', hb'⟩⟩
@@ -88,7 +88,7 @@ structure TestEntry where
   sealEngine         : Json := ""
   deriving Inhabited
 
-abbrev TestMap := Batteries.RBMap String TestEntry compare
+abbrev TestMap := RBTree.RBMap String TestEntry compare
 
 abbrev AccessListEntry := AccountAddress × Array UInt256
 
