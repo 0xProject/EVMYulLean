@@ -85,7 +85,7 @@ def toHex (bytes : ByteArray) : String :=
 instance : Repr ByteArray where
   reprPrec s _ := toHex s
 
-def Identifier := String
+@[implicit_reducible] def Identifier := String
 instance : ToString Identifier := inferInstanceAs (ToString String)
 instance : Inhabited Identifier := inferInstanceAs (Inhabited String)
 instance : DecidableEq Identifier := inferInstanceAs (DecidableEq String)
