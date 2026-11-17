@@ -25,6 +25,7 @@ theorem List.toByteArray_loop_data_toList (xs : List UInt8) (acc : ByteArray) :
 theorem List.toByteArray_data_toList (xs : List UInt8) :
     (List.toByteArray xs).data.toList = xs := by
   simp [List.toByteArray, ByteArray.empty, ByteArray.emptyWithCapacity]
+  rfl
 
 @[simp]
 theorem UInt256.toByteArray_data_toList (val : UInt256) :
@@ -84,7 +85,7 @@ def toHex (bytes : ByteArray) : String :=
 instance : Repr ByteArray where
   reprPrec s _ := toHex s
 
-def Identifier := String
+@[implicit_reducible] def Identifier := String
 instance : ToString Identifier := inferInstanceAs (ToString String)
 instance : Inhabited Identifier := inferInstanceAs (Inhabited String)
 instance : DecidableEq Identifier := inferInstanceAs (DecidableEq String)
@@ -210,7 +211,7 @@ def getBlob? (s : String) : Except String Blob :=
     let rest := s.drop HexPrefix.length
     if rest.any (not ∘ isHexDigitChar)
     then .error "Blobs must consist of valid hex digits."
-    else .ok rest.toLower
+    else .ok rest.toString.toLower
   else .error "Input does not begin with 0x."
   where
     isHex (s : String) := s.startsWith HexPrefix

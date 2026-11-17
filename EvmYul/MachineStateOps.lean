@@ -1,4 +1,4 @@
-import Batteries.Data.RBMap
+import Batteries.Recycling.RBTree
 
 import EvmYul.MachineState
 
@@ -18,7 +18,7 @@ def writeBytes
 
 namespace MachineState
 
-open Batteries (RBMap)
+open RBTree (RBMap)
 
 -- Appendix H, (320)
 def M (s f l : ℕ) : ℕ :=

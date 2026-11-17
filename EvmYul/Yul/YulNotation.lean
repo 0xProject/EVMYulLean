@@ -36,12 +36,12 @@ def idFn : ParserFn := fun c s => Id.run do
     let fst := input.get' start h
     if not (idFirstChar.contains fst) then
       return s.mkError "yul identifier"
-    let s := takeWhileFn idSubsequentChar.contains c (s.next input start)
+    let s := takeWhileFn idSubsequentChar.contains c (s.next c start)
     let stop := s.pos
-    let name := .str .anonymous (input.extract start stop)
+    let name := .str .anonymous (start.extract input stop)
     if yulKeywords.contains name.lastComponentAsString then
       return s.mkError "yul identifier"
-    mkIdResult start none name c s
+    mkIdResult start none name true c s
 
 def idNoAntiquot : Parser := { fn := idFn }
 
@@ -69,22 +69,22 @@ declare_syntax_cat stmt
 syntax identifier_list := ident,*
 syntax typed_identifier_list := ident,*
 syntax function_call := ident "(" expr,* ")"
-syntax block := "{" stmt* "}"
-syntax if' := "if" expr block
+syntax yulBlock := "{" stmt* "}"
+syntax if' := "if" expr yulBlock
 syntax function_definition :=
   "function" ident "(" typed_identifier_list ")"
     ("->" typed_identifier_list)?
-    block
+    yulBlock
 syntax params_list := "[" typed_identifier_list "]"
 syntax variable_declaration := "let" ident (":=" expr)?
 -- syntax let_str_literal := "let" ident ":=" str -- TODO(fix)
 syntax variable_declarations := "let" typed_identifier_list (":=" expr)?
-syntax for_loop := "for" block expr block block
+syntax for_loop := "for" yulBlock expr yulBlock yulBlock
 syntax assignment := identifier_list ":=" expr
 
 syntax stmtlist := stmt*
 
-syntax block : stmt
+syntax yulBlock : stmt
 syntax if' : stmt
 syntax function_definition : stmt
 syntax variable_declarations : stmt
@@ -127,7 +127,7 @@ partial def translatePrimOp (primOp : PrimOp) : TermElabM Term := do
   where
     familyAndInstr (primOp : PrimOp) : TermElabM (String × String) := do
       let family :: instr :: [] := toString primOp |>.splitOn | throwError s!"{primOp} shape not <family> <instruction>"
-      pure (family, instr.drop 1 |>.dropRight 1)
+      pure (family, (instr.drop 1 |>.dropEnd 1).toString)
     YulTag : Name := "EvmYul.OperationType.Yul".toName
 
 partial def translateIdent (idn : TSyntax `ident) : TSyntax `term :=
