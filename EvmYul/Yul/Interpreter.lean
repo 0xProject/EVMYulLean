@@ -90,7 +90,7 @@ def finishChildCallOutcome {α : Type}
   match res with
   | .error (.YulHalt s₂ _) | .ok (s₂, _) =>
     finishChildCallSuccess s₀ s₂ varstore outOffset outSize
-  | .error .Revert | .error .StaticModeViolation =>
+  | .error (.Revert _) | .error .StaticModeViolation =>
     buildContractCallEmptyReturnState s₀ .none ⟨0⟩
   | .error e => .error e
 
@@ -487,7 +487,7 @@ def execTopLevel (fuel : Nat) (stmt : Stmt) (s : State) : State :=
     | .error .InvalidExpression => default
     | .error .YulEXTCODESIZENotImplemented => default
     | .error .InvalidMemoryAccess => default
-    | .error .Revert => s
+    | .error (.Revert _) => s
     | .error (.YulHalt s _) => s
     | .ok s => s
 
@@ -538,9 +538,10 @@ theorem primCallWithGas_eq_primCall_of_le (fork : EVM.Fork) (fuel : ℕ) (s₀ :
 
 /-- Child `.Revert` in `finishChildCallOutcome` rolls back world state to `s₀` and pushes `0`. -/
 theorem finishChildCallOutcome_revert_rolls_back {α : Type}
-    (shared₀ : EvmYul.SharedState .Yul) (varstore : VarStore) (outOffset outSize : UInt256) :
+    (shared₀ : EvmYul.SharedState .Yul) (varstore : VarStore) (outOffset outSize : UInt256)
+    (data : ByteArray) :
     finishChildCallOutcome (.Ok shared₀ varstore) varstore outOffset outSize
-      (.error .Revert : Except Yul.Exception (State × α)) =
+      (.error (.Revert data) : Except Yul.Exception (State × α)) =
     .ok (.Ok { shared₀ with H_return := ByteArray.empty, returnData := ByteArray.empty } varstore, [⟨0⟩]) := by
   rfl
 

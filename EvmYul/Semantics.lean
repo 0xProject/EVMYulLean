@@ -397,7 +397,7 @@ def step {τ : OperationType} (op : Operation τ) (arg : Option (UInt256 × Nat)
     | .Yul, .REVERT => λ yulState lits ↦ 
         match (dispatchBinaryMachineStateOp .Yul MachineState.evmRevert) yulState lits with
           | .error e => .error e
-          | .ok (_, _) => .error (Yul.Exception.Revert)
+          | .ok (s, _) => .error (Yul.Exception.Revert s.toMachineState.H_return)
     | .EVM, .SELFDESTRUCT =>
       λ evmState ↦
         match evmState.stack.pop with

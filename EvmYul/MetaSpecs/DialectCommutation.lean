@@ -211,7 +211,7 @@ def yulOutcome (i : Instruction) (s : SharedState .Yul) (vs : Yul.VarStore) :
   match i with
   | .stop => .error (.YulHalt (.Ok s' vs) ⟨0⟩)
   | .ret .. => .error (.YulHalt (.Ok s' vs) ⟨1⟩)
-  | .revert .. => .error .Revert
+  | .revert .. => .error (.Revert s'.H_return)
   | _ => .ok (.Ok s' vs, v)
 
 /-- Every effect above is connected to the real Yul semantics, not a separate
