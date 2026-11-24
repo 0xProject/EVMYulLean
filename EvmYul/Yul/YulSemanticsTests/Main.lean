@@ -1257,6 +1257,23 @@ def test₇ :=
   | .error e => repr e
   | .ok _ => "ok"
 
+/-- EIP-140: `REVERT` returns `memory[offset, offset + size)` (here 4 zero bytes, as memory
+is empty and expands with zeroes). -/
+def test₈ :=
+  match primCall 99 stateEg₁ .REVERT [⟨0⟩, ⟨4⟩] with
+  | .error (.Revert data) => s!"Revert {data.data.toList}"
+  | .error e => s!"{repr e}"
+  | .ok _ => "ok"
+
+/-- EIP-140/EIP-211: a reverted child call makes the revert data the caller's returndata,
+copies `min(outSize, ‖data‖)` of it to the output area, and pushes 0. -/
+def test₉ :=
+  let reverted : Except Exception (State × List Literal) := .error (.Revert ⟨#[1, 2, 3]⟩)
+  match finishChildCallOutcome stateEg₁ ∅ ⟨0⟩ ⟨2⟩ reverted with
+  | .error e => s!"{repr e}"
+  | .ok (s, v) =>
+    s!"{s.toMachineState.returnData.data.toList} {(s.toMachineState.memory.data.toList.take 2)} {v.map (fun (l : Literal) => l.toNat)}"
+
 end Yul
 
 end EvmYul
@@ -1273,3 +1290,5 @@ def main : IO Unit := do
   IO.println (s!"test₅: {test₅} -- " ++ (if s!"{test₅}" = "[1 [], 2 [(0, 5)], 3 [], 4 []]" then "Success" else "Failure"))
   IO.println (s!"test₆: {test₆} -- " ++ (if s!"{test₆}" = "InvalidMemoryAccess" then "Success" else "Failure"))
   IO.println (s!"test₇: {test₇} -- " ++ (if s!"{test₇}" = "ok" then "Success" else "Failure"))
+  IO.println (s!"test₈: {test₈} -- " ++ (if s!"{test₈}" = "Revert [0, 0, 0, 0]" then "Success" else "Failure"))
+  IO.println (s!"test₉: {test₉} -- " ++ (if s!"{test₉}" = "[1, 2, 3] [1, 2] [0]" then "Success" else "Failure"))
