@@ -70,7 +70,10 @@ To execute the Yul semantics tests run:
 
 `lake exe yulSemanticsTests`
 
-These tests are defined in `EvmYul/Yul/YulSemanticsTests/Main.lean`.
+These tests are defined in `EvmYul/Yul/YulSemanticsTests/Main.lean`. The runner prints one
+`Success`/`Failure` line per check and exits with status 1 if any check fails; CI runs it.
+Precompiles call Python, so install the packages listed in `.github/workflows/lean_action_ci.yml`
+first: without them a precompile panics (`PANIC` in the output) and its result is wrong.
 
 # Limitations of the Yul semantics
 

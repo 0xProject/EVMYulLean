@@ -25,3 +25,17 @@ jobs:
           out="$(~/.elan/bin/lake env lean --load-dynlib=.lake/build/lib/libleanffi.so --load-dynlib=.lake/build/lib/lean/evmyul_EvmYul_FFI_ffi.so --run Conform/Create2OsakaChecks.lean 2>&1)"
           printf '%s\n' "$out"
           test "$out" = "Osaka CREATE2 storage reset and nonce/code collision checks passed:4"
+      - name: Run Yul semantics tests
+        run: |
+          # The runner exits 1 if any check fails. A Lean `panic!` (e.g. a precompile whose
+          # Python dependency is missing) does not stop the run, so it fails the step too.
+          set +e
+          out="$(~/.elan/bin/lake exe yulSemanticsTests 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+          if printf '%s\n' "$out" | grep -q 'PANIC'; then
+            echo "::error::yulSemanticsTests panicked"
+            exit 1
+          fi
+          exit "$status"

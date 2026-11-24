@@ -1222,6 +1222,9 @@ def test₂ :=
   | .error e => repr e
   | .ok s => s!"{s.toSharedState.accountMap.toList.map (fun (a : AccountAddress × Account .Yul) => repr a.1 ++ " " ++ repr a.2.storage.toList)}"
 
+/-- `fun_testStaticStore` STATICCALLs a contract that writes storage. The write is a
+static-mode violation of the child frame only (EIP-214): the STATICCALL returns 0 with
+empty returndata, and the caller's ABI decoding of that empty returndata reverts. -/
 def test₃ :=
   let expr : Expr := .Call (Sum.inr "fun_testStaticStore") [.Lit ⟨42⟩]
   match (exec 99 (.ExprStmtCall expr) .none stateEg₂) with
@@ -1274,21 +1277,43 @@ def test₉ :=
   | .ok (s, v) =>
     s!"{s.toMachineState.returnData.data.toList} {(s.toMachineState.memory.data.toList.take 2)} {v.map (fun (l : Literal) => l.toNat)}"
 
+/-- EIP-214: a child call that violates static mode only fails the child: the caller gets
+0, its returndata is empty, and its output area is untouched. -/
+def test₁₀ :=
+  let violated : Except Exception (State × List Literal) := .error .StaticModeViolation
+  match finishChildCallOutcome stateEg₁ ∅ ⟨0⟩ ⟨2⟩ violated with
+  | .error e => s!"{repr e}"
+  | .ok (s, v) =>
+    s!"{s.toMachineState.returnData.data.toList} {s.toMachineState.memory.size} {v.map (fun (l : Literal) => l.toNat)}"
+
 end Yul
 
 end EvmYul
 
 open EvmYul.Yul
 
--- Run this test via `lake exe yulSemanticsTests`.
+-- Run this test via `lake exe yulSemanticsTests`; it exits with status 1 if any check fails.
 -- `#eval` cannot run the test because it uses the foreign function interface for `ByteArray.zeroes`.
-def main : IO Unit := do
-  IO.println (s!"test₁: {test₁} -- " ++ (if s!"{test₁}" = "[1 [(0, 42)], 2 [(0, 42)], 3 [], 4 []]" then "Success" else "Failure"))
-  IO.println (s!"test₂: {test₂} -- " ++ (if s!"{test₂}" = "[1 [], 2 [(0, 21)], 3 [(0, 21)], 4 []]" then "Success" else "Failure"))
-  IO.println (s!"test₃: {test₃} -- " ++ (if s!"{test₃}" = "StaticModeViolation" then "Success" else "Failure"))
-  IO.println (s!"test₄: {test₄} -- " ++ (if s!"{test₄}" = "[1 [], 2 [(0, 5)], 3 [], 4 []]" then "Success" else "Failure"))
-  IO.println (s!"test₅: {test₅} -- " ++ (if s!"{test₅}" = "[1 [], 2 [(0, 5)], 3 [], 4 []]" then "Success" else "Failure"))
-  IO.println (s!"test₆: {test₆} -- " ++ (if s!"{test₆}" = "InvalidMemoryAccess" then "Success" else "Failure"))
-  IO.println (s!"test₇: {test₇} -- " ++ (if s!"{test₇}" = "ok" then "Success" else "Failure"))
-  IO.println (s!"test₈: {test₈} -- " ++ (if s!"{test₈}" = "Revert [0, 0, 0, 0]" then "Success" else "Failure"))
-  IO.println (s!"test₉: {test₉} -- " ++ (if s!"{test₉}" = "[1, 2, 3] [1, 2] [0]" then "Success" else "Failure"))
+
+/-- Print `name: actual -- Success|Failure` and return whether `actual = expected`. -/
+def check (name actual expected : String) : IO Bool := do
+  let ok := actual = expected
+  IO.println s!"{name}: {actual} -- {if ok then "Success" else "Failure"}"
+  return ok
+
+def main : IO UInt32 := do
+  let results ← [
+    check "test₁" s!"{test₁}" "[1 [(0, 42)], 2 [(0, 42)], 3 [], 4 []]",
+    check "test₂" s!"{test₂}" "[1 [], 2 [(0, 21)], 3 [(0, 21)], 4 []]",
+    check "test₃" s!"{test₃}" "Revert",
+    check "test₄" s!"{test₄}" "[1 [], 2 [(0, 5)], 3 [], 4 []]",
+    check "test₅" s!"{test₅}" "[1 [], 2 [(0, 5)], 3 [], 4 []]",
+    check "test₆" s!"{test₆}" "InvalidMemoryAccess",
+    check "test₇" s!"{test₇}" "ok",
+    check "test₈" s!"{test₈}" "Revert [0, 0, 0, 0]",
+    check "test₉" s!"{test₉}" "[1, 2, 3] [1, 2] [0]",
+    check "test₁₀" s!"{test₁₀}" "[] 0 [0]"
+  ].mapM id
+  let failures := results.countP (· = false)
+  IO.println s!"{results.length - failures}/{results.length} checks passed"
+  return if failures = 0 then 0 else 1
