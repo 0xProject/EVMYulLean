@@ -80,9 +80,23 @@ def finishChildCallSuccess
                             executionEnv := executionEnv₃ }
     .ok (.Ok sharedState₃ varstore, [⟨1⟩])
 
+/-- A child message call that reverted with `data`: the world state rolls back to `s₀`, and,
+    as for any call output (EIP-140, EIP-211), `data` is copied to the parent's
+    `memory[outOffset, outOffset + min(outSize, ‖data‖))` and becomes its returndata. Returns `0`. -/
+def finishChildCallRevert (s₀ : State) (outOffset outSize : UInt256) (data : ByteArray) :
+    Except Yul.Exception (State × List Literal) :=
+  match s₀ with
+  | .OutOfFuel => .error .OutOfFuel
+  | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
+  | .Ok sharedState₀ varstore =>
+    let memory₁ := data.copySlice 0 sharedState₀.memory outOffset.toNat (min outSize.toNat data.size)
+    .ok (.Ok { sharedState₀ with memory := memory₁, H_return := ByteArray.empty, returnData := data }
+      varstore, [⟨0⟩])
+
 /-- Unified child message-call outcome handler across `.CALL`, `.STATICCALL`, `.CALLCODE`, and `.DELEGATECALL`:
     - normal completion or `.YulHalt` restores parent environment via `finishChildCallSuccess` and returns `1`,
-    - child `.Revert` or `.StaticModeViolation` rolls back world state to `s₀` and returns `0`. -/
+    - child `.Revert data` rolls back world state to `s₀`, exposes `data` via `finishChildCallRevert`, and returns `0`,
+    - child `.StaticModeViolation` rolls back world state to `s₀`, with empty returndata, and returns `0`. -/
 def finishChildCallOutcome {α : Type}
     (s₀ : State) (varstore : VarStore) (outOffset outSize : UInt256)
     (res : Except Yul.Exception (State × α)) :
@@ -90,7 +104,9 @@ def finishChildCallOutcome {α : Type}
   match res with
   | .error (.YulHalt s₂ _) | .ok (s₂, _) =>
     finishChildCallSuccess s₀ s₂ varstore outOffset outSize
-  | .error (.Revert _) | .error .StaticModeViolation =>
+  | .error (.Revert data) =>
+    finishChildCallRevert s₀ outOffset outSize data
+  | .error .StaticModeViolation =>
     buildContractCallEmptyReturnState s₀ .none ⟨0⟩
   | .error e => .error e
 
@@ -536,13 +552,18 @@ theorem primCallWithGas_eq_primCall_of_le (fork : EVM.Fork) (fuel : ℕ) (s₀ :
   unfold primCallWithGas consumeYulGas
   simp [hLe, Bind.bind, Except.bind]
 
-/-- Child `.Revert` in `finishChildCallOutcome` rolls back world state to `s₀` and pushes `0`. -/
+/-- Child `.Revert data` in `finishChildCallOutcome` rolls back world state to `s₀`, copies
+    `data` to the output area, makes it the returndata, and pushes `0`. -/
 theorem finishChildCallOutcome_revert_rolls_back {α : Type}
     (shared₀ : EvmYul.SharedState .Yul) (varstore : VarStore) (outOffset outSize : UInt256)
     (data : ByteArray) :
     finishChildCallOutcome (.Ok shared₀ varstore) varstore outOffset outSize
       (.error (.Revert data) : Except Yul.Exception (State × α)) =
-    .ok (.Ok { shared₀ with H_return := ByteArray.empty, returnData := ByteArray.empty } varstore, [⟨0⟩]) := by
+    .ok (.Ok { shared₀ with
+                memory := data.copySlice 0 shared₀.memory outOffset.toNat
+                  (min outSize.toNat data.size)
+                H_return := ByteArray.empty
+                returnData := data } varstore, [⟨0⟩]) := by
   rfl
 
 /-- Child `.StaticModeViolation` in `finishChildCallOutcome` rolls back world state to `s₀` and pushes `0`. -/
