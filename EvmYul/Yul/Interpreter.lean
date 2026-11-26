@@ -64,9 +64,11 @@ mutual
 
 def primCall (fuel : ℕ) (s₀ : State) (prim : Operation .Yul) (args : List Literal) : Except Yul.Exception (State × List Literal) :=
   do
-    match fuel with
-    | 0 => .error .OutOfFuel
-    | .succ fuel₁ => 
+    match fuel, s₀ with
+    | 0, _ => .error .OutOfFuel
+    | _, .OutOfFuel => .error .OutOfFuel
+    | _, .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
+    | .succ fuel₁, .Ok _ _ =>
       if ¬s₀.executionEnv.perm ∧ prim ∈ [.CREATE, .CREATE2, .SSTORE, .SELFDESTRUCT, .LOG0, .LOG1, .LOG2, .LOG3, .LOG4, .TSTORE] then throw .StaticModeViolation
       match prim with
       | .CALL =>
@@ -563,16 +565,18 @@ def primCall (fuel : ℕ) (s₀ : State) (prim : Operation .Yul) (args : List Li
     `exec` executs a single statement.
   -/
   def exec (fuel : Nat) (stmt : Stmt) (codeOverride : Option YulContract) (s : State) : Except Yul.Exception State :=
-    match fuel with
-    | 0 => .error .OutOfFuel
-    | .succ fuel' =>
+    match fuel, s with
+    | 0, _ => .error .OutOfFuel
+    | .succ _, .OutOfFuel => .ok .OutOfFuel
+    | .succ _, .Checkpoint j => .ok (.Checkpoint j)
+    | .succ fuel', .Ok _ _ =>
       match stmt with
         | .Block [] => .ok s
         | .Block (stmt :: stmts) =>
-          let s₁ := exec fuel' stmt codeOverride s
-          match s₁ with
+          match exec fuel' stmt codeOverride s with
             | .error e => .error e
-            | .ok s₁ => exec fuel' (.Block stmts) codeOverride s₁
+            | .ok s₁@(.Ok _ _) => exec fuel' (.Block stmts) codeOverride s₁
+            | .ok s₁ => .ok s₁
 
         | .Let vars exprOption =>
             match exprOption with

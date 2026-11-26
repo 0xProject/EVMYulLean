@@ -207,7 +207,11 @@ def parseFunction : String → PrimOp ⊕ Identifier
 
 partial def translateExpr (expr : TSyntax `expr) : TermElabM Term :=
   match expr with
-    | `(expr| $idn:ident) => `(Expr.Var $(translateIdent idn))
+    | `(expr| $idn:ident) =>
+      match (TSyntax.getId idn).lastComponentAsString with
+      | "true" => `(Expr.Lit (.ofNat 1))
+      | "false" => `(Expr.Lit (.ofNat 0))
+      | _ => `(Expr.Var $(translateIdent idn))
     | `(expr| $num:num) => `(Expr.Lit (.ofNat $num))
     | `(expr| $name:ident($args:expr,*)) => do
       let args' ← (args : TSyntaxArray `expr).mapM translateExpr
@@ -224,6 +228,11 @@ partial def translateExpr (expr : TSyntax `expr) : TermElabM Term :=
 partial def translateExpr' (expr : TSyntax `expr) : TermElabM Term :=
   match expr with
   | `(expr| $num:num) => `(.ofNat $num)
+  | `(expr| $idn:ident) =>
+    match (TSyntax.getId idn).lastComponentAsString with
+    | "true" => `(.ofNat 1)
+    | "false" => `(.ofNat 0)
+    | _ => translateExpr expr
   | exp => translateExpr exp
 
 partial def translateParamsList
@@ -274,7 +283,7 @@ partial def translateStmt (stmt : TSyntax `stmt) : TermElabM Term :=
       let (lit, cs) := litCase; `(($lit, [$cs,*]))
     let switchCases ← lits.zip cases |>.mapM f
     let dflt ← match dflts with
-                 | .none => `([.Break])
+                 | .none => `([])
                  | .some dflts => `([$(←dflts.mapM translateStmt),*])
     `(Stmt.Switch $expr [$switchCases,*] $dflt)
 
