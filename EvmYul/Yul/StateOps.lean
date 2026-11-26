@@ -107,23 +107,38 @@ def lookup! (var : Identifier) : Yul.State → Literal
 
 def toSharedState : State → EvmYul.SharedState .Yul
   | Ok s _ => s
-  | _ => default
+  | Checkpoint (.Continue s _) => s
+  | Checkpoint (.Break s _) => s
+  | Checkpoint (.Leave s _) => s
+  | OutOfFuel => default
 
 def executionEnv : State → EvmYul.ExecutionEnv .Yul
   | Ok s _ => s.executionEnv
-  | _ => default
+  | Checkpoint (.Continue s _) => s.executionEnv
+  | Checkpoint (.Break s _) => s.executionEnv
+  | Checkpoint (.Leave s _) => s.executionEnv
+  | OutOfFuel => default
 
 def toMachineState : State → EvmYul.MachineState
   | Ok s _ => s.toMachineState
-  | _ => default
+  | Checkpoint (.Continue s _) => s.toMachineState
+  | Checkpoint (.Break s _) => s.toMachineState
+  | Checkpoint (.Leave s _) => s.toMachineState
+  | OutOfFuel => default
 
 def toState : State → EvmYul.State .Yul
   | Ok s _ => s.toState
-  | _ => default
+  | Checkpoint (.Continue s _) => s.toState
+  | Checkpoint (.Break s _) => s.toState
+  | Checkpoint (.Leave s _) => s.toState
+  | OutOfFuel => default
 
 def store : State → VarStore
   | Ok _ store => store
-  | _ => default
+  | Checkpoint (.Continue _ store) => store
+  | Checkpoint (.Break _ store) => store
+  | Checkpoint (.Leave _ store) => store
+  | OutOfFuel => default
 
 -- | All state-related functions should be prefix operators so they can be read right-to-left.
 

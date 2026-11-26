@@ -219,8 +219,8 @@ def swap (n : ℕ) : Transformer .EVM :=
 def step {τ : OperationType} (op : Operation τ) (arg : Option (UInt256 × Nat) := .none) : Transformer τ := Id.run do
   let _ : Id Unit := -- For debug logging
     match τ with
-      | .EVM => dbg_trace op.pretty; pure ()
-      | .Yul => dbg_trace op.pretty; pure ()
+      | .EVM => pure ()
+      | .Yul => pure ()
   return match τ, op with
     -- TODO: Revisit STOP, this is likely not the best way to do it.
     | τ, .STOP =>
@@ -325,8 +325,14 @@ def step {τ : OperationType} (op : Operation τ) (arg : Option (UInt256 × Nat)
       λ yulState lits ↦
         match lits with
           | [a, b, c] => do
-            let mState' := yulState.toSharedState.toMachineState.returndatacopy a b c
-            .ok <| (yulState.setMachineState mState', .none)
+            let mState := yulState.toSharedState.toMachineState
+            -- EIP-211: reading past the end of the return-data buffer is an
+            -- exceptional halt (mirrors the EVM check in `EVM.Semantics`).
+            if b.toNat + c.toNat > mState.returnData.size then
+              .error .InvalidMemoryAccess
+            else
+              let mState' := mState.returndatacopy a b c
+              .ok <| (yulState.setMachineState mState', .none)
           | _ => .error .InvalidArguments
     | .EVM, .EXTCODEHASH => dispatchUnaryStateOp .EVM EvmYul.State.extCodeHash
 
@@ -393,7 +399,7 @@ def step {τ : OperationType} (op : Operation τ) (arg : Option (UInt256 × Nat)
     | .Yul, .REVERT => λ yulState lits ↦ 
         match (dispatchBinaryMachineStateOp .Yul MachineState.evmRevert) yulState lits with
           | .error e => .error e
-          | .ok (_, _) => .error (Yul.Exception.Revert)
+          | .ok (s, _) => .error (Yul.Exception.Revert s.toMachineState.H_return)
     | .EVM, .SELFDESTRUCT =>
       λ evmState ↦
         match evmState.stack.pop with

@@ -17,7 +17,7 @@ a'la `Finmap`.
 TODO - All of this is very ugly.
 -/
 
-import Batteries.Recycling.RBTree
+import Std.Data.TreeMap
 
 import EvmYul.Wheels
 
@@ -30,16 +30,16 @@ namespace EvmYul
 
 section RemoveLater
 
-abbrev AddrMap (α : Type) [Inhabited α] := RBTree.RBMap AccountAddress α compare
+abbrev AddrMap (α : Type) [Inhabited α] := Std.TreeMap AccountAddress α compare
 abbrev AccountMap (τ : OperationType) := AddrMap (Account τ)
 abbrev PersistentAccountMap (τ : OperationType) := AddrMap (PersistentAccountState τ)
 def AccountMap.toPersistentAccountMap (τ : OperationType) (a : AccountMap τ) : PersistentAccountMap τ :=
-  a.mapVal (λ _ acc ↦ acc.toPersistentAccountState)
+  a.foldl (fun result addr acc => result.insert addr acc.toPersistentAccountState) ∅
 
 def AccountMap.increaseBalance (τ : OperationType) (σ : AccountMap τ) (addr : AccountAddress) (amount : UInt256)
   : AccountMap τ
 :=
-  match σ.find? addr with
+  match σ.get? addr with
     | none => σ.insert addr {(default : Account τ) with balance := amount}
     | some acc => σ.insert addr {acc with balance := acc.balance + amount}
 
@@ -49,7 +49,7 @@ def AccountMap.increaseBalance (τ : OperationType) (σ : AccountMap τ) (addr :
 def AccountMap.decreaseBalance (τ : OperationType) (σ : AccountMap τ) (addr : AccountAddress) (amount : UInt256)
   : Option (AccountMap τ)
 :=
-  match σ.find? addr with
+  match σ.get? addr with
     | none => .none
     | some acc =>
       if acc.balance < amount then .none else .some (σ.insert addr {acc with balance := acc.balance - amount})
@@ -71,10 +71,10 @@ def toExecute (τ : OperationType) (σ : AccountMap τ) (t : AccountAddress) : T
     match τ with
       | .EVM =>
         -- We use the code directly without an indirection a'la `codeMap[t]`.
-        let .some tDirect := σ.find? t | ToExecute.Code default
+        let .some tDirect := σ.get? t | ToExecute.Code default
         ToExecute.Code tDirect.code
       | .Yul =>
-        let .some tDirect := σ.find? t | ToExecute.Code default
+        let .some tDirect := σ.get? t | ToExecute.Code default
         ToExecute.Code tDirect.code
 
 def L_S (σ : PersistentAccountMap .EVM) : Array (ByteArray × ByteArray) :=

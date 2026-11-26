@@ -28,17 +28,16 @@ def idSubsequentChar : Array Char := Id.run <| do
   return arr.push '.'
 
 def idFn : ParserFn := fun c s => Id.run do
-  let input := c.input
   let start := s.pos
-  if h : input.atEnd start then
+  if h : c.atEnd start then
     s.mkEOIError
   else
-    let fst := input.get' start h
+    let fst := c.get' start h
     if not (idFirstChar.contains fst) then
       return s.mkError "yul identifier"
     let s := takeWhileFn idSubsequentChar.contains c (s.next c start)
     let stop := s.pos
-    let name := .str .anonymous (start.extract input stop)
+    let name := .str .anonymous (c.extract start stop)
     if yulKeywords.contains name.lastComponentAsString then
       return s.mkError "yul identifier"
     mkIdResult start none name true c s
@@ -69,22 +68,22 @@ declare_syntax_cat stmt
 syntax identifier_list := ident,*
 syntax typed_identifier_list := ident,*
 syntax function_call := ident "(" expr,* ")"
-syntax yulBlock := "{" stmt* "}"
-syntax if' := "if" expr yulBlock
+syntax yul_block := "{" stmt* "}"
+syntax if' := "if" expr yul_block
 syntax function_definition :=
   "function" ident "(" typed_identifier_list ")"
     ("->" typed_identifier_list)?
-    yulBlock
+    yul_block
 syntax params_list := "[" typed_identifier_list "]"
 syntax variable_declaration := "let" ident (":=" expr)?
 -- syntax let_str_literal := "let" ident ":=" str -- TODO(fix)
 syntax variable_declarations := "let" typed_identifier_list (":=" expr)?
-syntax for_loop := "for" yulBlock expr yulBlock yulBlock
+syntax for_loop := "for" yul_block expr yul_block yul_block
 syntax assignment := identifier_list ":=" expr
 
 syntax stmtlist := stmt*
 
-syntax yulBlock : stmt
+syntax yul_block : stmt
 syntax if' : stmt
 syntax function_definition : stmt
 syntax variable_declarations : stmt
@@ -100,13 +99,13 @@ syntax ident : expr
 syntax numLit : expr
 syntax function_call: expr
 
-syntax default := "default" "{" stmt* "}"
-syntax case := "case" expr "{" stmt* "}"
-syntax switch := "switch" expr case+ (default)?
-syntax switch_default := "switch" expr default
+syntax yul_default := "default" yul_block
+syntax yul_case := "case" expr yul_block
+syntax yul_switch := "switch" expr yul_case+ (yul_default)?
+syntax yul_switch_default := "switch" expr yul_default
 
-syntax switch : stmt
-syntax switch_default : stmt
+syntax yul_switch : stmt
+syntax yul_switch_default : stmt
 
 scoped syntax:max "<<" expr ">>" : term
 scoped syntax:max "<f" function_definition ">" : term
@@ -127,7 +126,7 @@ partial def translatePrimOp (primOp : PrimOp) : TermElabM Term := do
   where
     familyAndInstr (primOp : PrimOp) : TermElabM (String × String) := do
       let family :: instr :: [] := toString primOp |>.splitOn | throwError s!"{primOp} shape not <family> <instruction>"
-      pure (family, (instr.drop 1 |>.dropEnd 1).toString)
+      pure (family, (instr.drop 1).dropEnd 1 |>.toString)
     YulTag : Name := "EvmYul.OperationType.Yul".toName
 
 partial def translateIdent (idn : TSyntax `ident) : TSyntax `term :=
@@ -249,14 +248,14 @@ partial def translateFdef
   (fdef : TSyntax `EvmYul.Yul.Notation.function_definition)
 : TermElabM Term :=
   match fdef with
-  | `(function_definition| function $_:ident($args:ident,*) {$body:stmt*}) => do
+  | `(function_definition| function $_:ident($args:ident,*) $body:yul_block) => do
     let args' := (args : TSyntaxArray _).map translateIdent
-    let body' ← body.mapM translateStmt
+    let body' ← translateBlock body
     `(EvmYul.Yul.Ast.FunctionDefinition.Def [$args',*] [] [$body',*])
-  | `(function_definition| function $_:ident($args:ident,*) -> $rets,* {$body:stmt*}) => do
+  | `(function_definition| function $_:ident($args:ident,*) -> $rets,* $body:yul_block) => do
     let args' := (args : TSyntaxArray _).map translateIdent
     let rets' := (rets : TSyntaxArray _).map translateIdent
-    let body' ← body.mapM translateStmt
+    let body' ← translateBlock body
     `(EvmYul.Yul.Ast.FunctionDefinition.Def [$args',*] [$rets',*] [$body',*])
   | _ => throwError (toString fdef.raw)
 
@@ -264,33 +263,29 @@ partial def translateStmt (stmt : TSyntax `stmt) : TermElabM Term :=
   match stmt with
 
   -- Block
-  | `(stmt| {$stmts:stmt*}) => do
-    let stmts' ← stmts.mapM translateStmt
+  | `(stmt| $body:yul_block) => do
+    let stmts' ← translateBlock body
     `(Stmt.Block ([$stmts',*]))
 
   -- If
-  | `(stmt| if $cond:expr {$body:stmt*}) => do
+  | `(stmt| if $cond:expr $body:yul_block) => do
     let cond' ← translateExpr cond
-    let body' ← body.mapM translateStmt
+    let body' ← translateBlock body
     `(Stmt.If $cond' [$body',*])
 
   -- Switch
-  | `(stmt| switch $expr:expr $[case $lits { $cs:stmt* }]* $[default { $dflts:stmt* }]?) => do
+  | `(stmt| switch $expr:expr $cases:yul_case* $[$dflt:yul_default]?) => do
     let expr ← translateExpr expr
-    let lits ← lits.mapM translateExpr'
-    let cases ← cs.mapM (λ cc ↦ cc.mapM translateStmt)
-    let f (litCase : TSyntax `term × Array Term) : TermElabM Term := do
-      let (lit, cs) := litCase; `(($lit, [$cs,*]))
-    let switchCases ← lits.zip cases |>.mapM f
-    let dflt ← match dflts with
+    let switchCases ← cases.mapM translateCase
+    let dflt ← match dflt with
                  | .none => `([])
-                 | .some dflts => `([$(←dflts.mapM translateStmt),*])
+                 | .some dflt => `([$(← translateDefault dflt),*])
     `(Stmt.Switch $expr [$switchCases,*] $dflt)
 
   -- Switch
-  | `(stmt| switch $expr:expr default {$dflts:stmt*}) => do
+  | `(stmt| switch $expr:expr $dflt:yul_default) => do
     let expr ← translateExpr expr
-    let dflt ← dflts.mapM translateStmt
+    let dflt ← translateDefault dflt
     `(Stmt.Switch $expr [] ([$dflt,*]))
 
   -- Let
@@ -327,10 +322,13 @@ partial def translateStmt (stmt : TSyntax `stmt) : TermElabM Term :=
     `(Stmt.ExprStmtCall $expr)
 
   -- For
-  | `(stmt| for {} $cond:expr {$post:stmt*} {$body:stmt*}) => do
+  | `(stmt| for $pre:yul_block $cond:expr $post:yul_block $body:yul_block) => do
+    let pre' ← translateBlock pre
+    unless pre'.isEmpty do
+      throwError "Yul for-loop prelude must be empty"
     let cond' ← translateExpr cond
-    let post' ← post.mapM translateStmt
-    let body' ← body.mapM translateStmt
+    let post' ← translateBlock post
+    let body' ← translateBlock body
     `(Stmt.For $cond' [$post',*] [$body',*])
 
   -- Break
@@ -344,12 +342,36 @@ partial def translateStmt (stmt : TSyntax `stmt) : TermElabM Term :=
 
   -- Anything else
   | _ => throwError (toString stmt.raw)
+
+partial def translateBlock
+  (block : TSyntax `EvmYul.Yul.Notation.yul_block)
+: TermElabM (Array Term) :=
+  match block with
+  | `(yul_block| { $stmts:stmt* }) => stmts.mapM translateStmt
+  | _ => throwError (toString block.raw)
+
+partial def translateCase
+  (caseStx : TSyntax `EvmYul.Yul.Notation.yul_case)
+: TermElabM Term :=
+  match caseStx with
+  | `(yul_case| case $lit:expr $body:yul_block) => do
+    let lit' ← translateExpr' lit
+    let body' ← translateBlock body
+    `(($lit', [$body',*]))
+  | _ => throwError (toString caseStx.raw)
+
+partial def translateDefault
+  (defaultStx : TSyntax `EvmYul.Yul.Notation.yul_default)
+: TermElabM (Array Term) :=
+  match defaultStx with
+  | `(yul_default| default $body:yul_block) => translateBlock body
+  | _ => throwError (toString defaultStx.raw)
 end
 
 partial def translateStmtList (stmt : TSyntax `stmt) : TermElabM Term :=
   match stmt with
-  | `(stmt| {$stmts:stmt*}) => do
-    let stmts' ← stmts.mapM translateStmt
+  | `(stmt| $body:yul_block) => do
+    let stmts' ← translateBlock body
     `([$stmts',*])
   | _ => throwError (toString stmt.raw)
 
@@ -456,6 +478,14 @@ example : <s {
     leave
   }
 > = Stmt.Block [Stmt.If (.Lit ⟨1⟩) [.Leave], .Leave] := rfl
+example : << true >> = Expr.Lit (.ofNat 1) := rfl
+example : << false >> = Expr.Lit (.ofNat 0) := rfl
+example : << clz(x) >> = Expr.Call (Sum.inl (.CompBit .CLZ)) [Expr.Var "x"] := rfl
+example : <s
+  switch a
+  case true { leave }
+  case false { continue }
+> = Stmt.Switch (Expr.Var "a") [(.ofNat 1, [.Leave]), (.ofNat 0, [.Continue])] [] := rfl
 
 end Notation
 

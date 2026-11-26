@@ -9,6 +9,8 @@ namespace EvmYul
 
 def chainId : ℕ := 1
 
+/-- Encodes a 256-bit word as 32 big-endian bytes. Departure from upstream: uses pure `List`
+operations so the kernel can unfold it; see `ByteArray.write` for the trade-off. -/
 def UInt256.toByteArray (val : UInt256) : ByteArray :=
   let b := toBytesBigEndian val.toNat
   List.toByteArray (List.replicate (32 - b.length) 0 ++ b)
@@ -21,11 +23,9 @@ theorem List.toByteArray_loop_data_toList (xs : List UInt8) (acc : ByteArray) :
   | cons b bs ih =>
       simp [List.toByteArray.loop, ih, ByteArray.push, Array.toList_push, List.append_assoc]
 
-@[simp]
 theorem List.toByteArray_data_toList (xs : List UInt8) :
-    (List.toByteArray xs).data.toList = xs := by
-  simp [List.toByteArray, ByteArray.empty, ByteArray.emptyWithCapacity]
-  rfl
+    (List.toByteArray xs).data.toList = xs :=
+  _root_.List.toList_data_toByteArray
 
 @[simp]
 theorem UInt256.toByteArray_data_toList (val : UInt256) :
@@ -222,11 +222,15 @@ def ByteArray.ofBlob (self : Blob) : Except String ByteArray := do
   let chunks ← self.toList.toChunks 2 |>.mapM ofHex?
   pure ⟨chunks.toArray⟩
 
+/-- Reads `size` bytes from `start`, zero-padding on the right. Departure from upstream: slices via
+`List.drop`/`List.take` so the kernel can unfold it; see `ByteArray.write`. -/
 def ByteArray.readBytes (source : ByteArray) (start size : ℕ) : ByteArray :=
   let read :=
     ⟨⟨source.data.toList.drop start |>.take size⟩⟩
   read ++ ffi.ByteArray.zeroes ⟨size - read.size⟩
 
+/-- Reads up to `len` bytes from `addr` without padding. Departure from upstream: clamps to
+`source.size - addr` and slices via `List` operations; see `ByteArray.write`. -/
 def ByteArray.readWithoutPadding (source : ByteArray) (addr len : ℕ) : ByteArray :=
   if addr ≥ source.size then .empty else
     let len := min len (source.size - addr)
@@ -376,6 +380,16 @@ end
 
 def myByteArray : ByteArray := ⟨#[1, 2, 3]⟩
 
+/-- Writes `len` bytes at `destAddr`: the bytes of `source` from `sourceAddr`, then zeroes if
+`source` ends first. Zeroes fill any gap between the end of `dest` and `destAddr`, so the result
+has size `max dest.size (destAddr + len)` when `len > 0`.
+
+Departure from upstream: upstream uses `ByteArray.copySlice` and `ffi.ByteArray.zeroes`, whose
+`USize` length wraps, and it does not grow `dest` when `sourceAddr ≥ source.size`. This version
+uses only `List` operations, so the kernel can unfold it. Padded reads return the same bytes
+whenever `destAddr - dest.size < 2 ^ System.Platform.numBits`; `memory.size` differs. Each write
+performs several `List` traversals over `source`, `dest`, and materialized padding, taking time
+proportional to `source.size + dest.size + destAddr + len`. -/
 def ByteArray.write
   (source : ByteArray)
   (sourceAddr : ℕ)

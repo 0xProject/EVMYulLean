@@ -14,8 +14,12 @@ inductive Exception where
   | MissingContractFunction (s : String)          : Exception
   | InvalidExpression                             : Exception
   | YulEXTCODESIZENotImplemented                  : Exception
-  | Revert                                        : Exception
+  /-- `REVERT` (EIP-140), with the bytes it returns: `memory[offset, offset + size)`. -/
+  | Revert (data : ByteArray)                     : Exception
   | YulHalt (state : Yul.State) (value : UInt256) : Exception
+  /-- `RETURNDATACOPY` read past the end of the return-data buffer (EIP-211):
+  an exceptional halt, as in the EVM semantics. -/
+  | InvalidMemoryAccess                           : Exception
   -- | StopInvoked        : Exception
 
 instance : Repr Exception where
@@ -30,8 +34,9 @@ instance : Repr Exception where
       | .MissingContractFunction f => "MissingContractFunction: " ++ f
       | .InvalidExpression => "InvalidExpression"
       | .YulEXTCODESIZENotImplemented => "YulEXTCODESIZENotImplemented"
-      | .Revert => "Revert"
+      | .Revert _ => "Revert"
       | .YulHalt _ _ => "YulHalt: (holds a state and a value)"
+      | .InvalidMemoryAccess => "InvalidMemoryAccess"
 
 
 end Yul

@@ -9,7 +9,7 @@ package «evmyul» {
   moreServerOptions := #[⟨`autoImplicit, false⟩]
 }
 
-def cloneWithCache (pkg : NPackage _package.name) (dirname url : String) : FetchM (Job GitRepo) := do
+def cloneWithCache (pkg : NPackage __name__) (dirname url : String) : FetchM (Job GitRepo) := do
   let repoDir : GitRepo := ⟨pkg.dir / dirname⟩
   if !(← repoDir.dir.pathExists) then dbg_trace s!"Cloning: {url}"; GitRepo.clone url repoDir
   return pure repoDir

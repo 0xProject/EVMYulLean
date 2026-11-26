@@ -1,4 +1,3 @@
-import Lean.Data.RBMap
 import Lean.Data.Json
 
 -- import EvmYul.Maps
@@ -88,7 +87,7 @@ structure TestEntry where
   sealEngine         : Json := ""
   deriving Inhabited
 
-abbrev TestMap := RBTree.RBMap String TestEntry compare
+abbrev TestMap := Std.TreeMap String TestEntry compare
 
 abbrev AccessListEntry := AccountAddress × Array UInt256
 

@@ -6,6 +6,8 @@ import EvmYul.Yul.PrimOps
 import EvmYul.Yul.StateOps
 import EvmYul.Yul.SizeLemmas
 import EvmYul.Yul.Exception
+import EvmYul.Yul.MessageCallCombinator
+import EvmYul.Yul.GasInterpreter
 
 import EvmYul.Semantics
 
@@ -60,6 +62,54 @@ def buildContractCallEmptyReturnState (s₀ : State) (accountMap₁ : Option (Ac
                                              accountMap := accountMap₁.getD s₀.toSharedState.accountMap }
       .ok (.Ok sharedState₁ varstore, [v])
 
+/-- Restore the parent frame's execution environment and copy the bounded return-data slice
+    after a child message call completes with `s₂`. -/
+def finishChildCallSuccess
+    (s₀ s₂ : State) (varstore : VarStore) (outOffset outSize : UInt256) :
+    Except Yul.Exception (State × List Literal) :=
+  let memory₃ := s₂.toMachineState.H_return.copySlice 0 s₀.toMachineState.memory outOffset.toNat (min outSize.toNat s₂.toMachineState.H_return.size)
+  match s₂ with
+  | .OutOfFuel => .error .OutOfFuel
+  | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
+  | .Ok sharedState₂ _ =>
+    let executionEnv₃ := restoreParentCallEnv s₀.executionEnv sharedState₂.executionEnv
+    let sharedState₃ := { sharedState₂ with
+                            memory := memory₃,
+                            returnData := s₂.toMachineState.H_return,
+                            H_return := ByteArray.empty,
+                            executionEnv := executionEnv₃ }
+    .ok (.Ok sharedState₃ varstore, [⟨1⟩])
+
+/-- A child message call that reverted with `data`: the world state rolls back to `s₀`, and,
+    as for any call output (EIP-140, EIP-211), `data` is copied to the parent's
+    `memory[outOffset, outOffset + min(outSize, ‖data‖))` and becomes its returndata. Returns `0`. -/
+def finishChildCallRevert (s₀ : State) (outOffset outSize : UInt256) (data : ByteArray) :
+    Except Yul.Exception (State × List Literal) :=
+  match s₀ with
+  | .OutOfFuel => .error .OutOfFuel
+  | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
+  | .Ok sharedState₀ varstore =>
+    let memory₁ := data.copySlice 0 sharedState₀.memory outOffset.toNat (min outSize.toNat data.size)
+    .ok (.Ok { sharedState₀ with memory := memory₁, H_return := ByteArray.empty, returnData := data }
+      varstore, [⟨0⟩])
+
+/-- Unified child message-call outcome handler across `.CALL`, `.STATICCALL`, `.CALLCODE`, and `.DELEGATECALL`:
+    - normal completion or `.YulHalt` restores parent environment via `finishChildCallSuccess` and returns `1`,
+    - child `.Revert data` rolls back world state to `s₀`, exposes `data` via `finishChildCallRevert`, and returns `0`,
+    - child `.StaticModeViolation` rolls back world state to `s₀`, with empty returndata, and returns `0`. -/
+def finishChildCallOutcome {α : Type}
+    (s₀ : State) (varstore : VarStore) (outOffset outSize : UInt256)
+    (res : Except Yul.Exception (State × α)) :
+    Except Yul.Exception (State × List Literal) :=
+  match res with
+  | .error (.YulHalt s₂ _) | .ok (s₂, _) =>
+    finishChildCallSuccess s₀ s₂ varstore outOffset outSize
+  | .error (.Revert data) =>
+    finishChildCallRevert s₀ outOffset outSize data
+  | .error .StaticModeViolation =>
+    buildContractCallEmptyReturnState s₀ .none ⟨0⟩
+  | .error e => .error e
+
 mutual
 
 def primCall (fuel : ℕ) (s₀ : State) (prim : Operation .Yul) (args : List Literal) : Except Yul.Exception (State × List Literal) :=
@@ -73,339 +123,131 @@ def primCall (fuel : ℕ) (s₀ : State) (prim : Operation .Yul) (args : List Li
       match prim with
       | .CALL =>
         match args with
-          | _ :: address_arg :: value :: inOffset :: inSize :: outOffset :: outSize :: _ =>
+          | gas_arg :: address_arg :: value :: inOffset :: inSize :: outOffset :: outSize :: _ =>
             if ¬s₀.executionEnv.perm ∧ value ≠ ⟨0⟩ then throw .StaticModeViolation
             let address := AccountAddress.ofUInt256 address_arg
             let calldata₁ := s₀.toMachineState.memory.readWithPadding inOffset.toNat inSize.toNat
             let accountMap₁Opt := (s₀.sharedState.accountMap.transferBalance .Yul s₀.executionEnv.codeOwner address value)
             match accountMap₁Opt with
               | .none =>
-                buildContractCallEmptyReturnState s₀ .none ⟨0⟩ -- Insufficient funds: return 0 to indicate error, with empty return data 
+                buildContractCallEmptyReturnState s₀ .none ⟨0⟩
               | .some accountMap₁ =>
-                if s₀.executionEnv.depth ≥ 1024
-                then
-                  buildContractCallEmptyReturnState s₀ .none ⟨0⟩ -- Reached depth limit: return 0 to indicate error, with empty return data 
+                if s₀.executionEnv.depth ≥ 1024 then
+                  buildContractCallEmptyReturnState s₀ .none ⟨0⟩
                 else
                   match s₀ with
                   | .OutOfFuel => .error .OutOfFuel
                   | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
                   | .Ok sharedState varstore =>
-                      match s₀.sharedState.accountMap.find? address with
-                        | .none => 
-                          buildContractCallEmptyReturnState s₀ accountMap₁ ⟨1⟩ -- No contract at the provided address, return 1 to indicate success, with empty return data. (Like STOP opcode).
+                      match s₀.sharedState.accountMap.get? address with
+                        | .none =>
+                          buildContractCallEmptyReturnState s₀ accountMap₁ ⟨1⟩
                         | .some yulContract =>
-                          let executionEnv₁ := { sharedState.executionEnv with
-                                                    calldata := calldata₁,
-                                                    code := yulContract.code,
-                                                    codeOwner := address,
-                                                    source := s₀.executionEnv.codeOwner,
-                                                    weiValue := value
-                                                    depth := s₀.executionEnv.depth + 1
-                                                }
+                          let callParams : YulCallParams := {
+                            gas := gas_arg, target := address, value := value,
+                            inOffset := inOffset, inSize := inSize, outOffset := outOffset, outSize := outSize
+                          }
+                          let executionEnv₁ := { prepareChildCallEnv .Call sharedState.executionEnv callParams calldata₁ with
+                                                    code := yulContract.code }
                           let sharedState₁ := { sharedState with
                                                   executionEnv := executionEnv₁,
                                                   memory := ByteArray.mk #[],
-                                                  accountMap := accountMap₁
-                                              }
+                                                  accountMap := accountMap₁ }
                           let s₁ : State := .Ok sharedState₁ default
-                          
-                          match callDispatcher fuel₁ .none s₁ with
-                          | .error (.YulHalt s₂ _) => 
-                            let memory₃ := s₂.toMachineState.H_return.copySlice 0 s₀.toMachineState.memory outOffset.toNat (min outSize.toNat s₂.toMachineState.H_return.size)
-                            match s₂ with
-                              | .OutOfFuel => .error .OutOfFuel
-                              | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
-                              | .Ok sharedState₂ _ =>
-                              
-                                -- Restore ExecutionEnv
-                                let executionEnv₃ := { sharedState₂.executionEnv with
-                                                    calldata := default,
-                                                    code := s₀.executionEnv.code,
-                                                    codeOwner := s₀.executionEnv.codeOwner,
-                                                    source := s₀.executionEnv.source,
-                                                    weiValue := s₀.executionEnv.weiValue,
-                                                }
-                                let sharedState₃ := { sharedState₂ with
-                                                        memory := memory₃,
-                                                        returnData := s₂.toMachineState.H_return,
-                                                        executionEnv := executionEnv₃,
-                                                        H_return := ByteArray.empty
-                                                    }
-                                .ok (.Ok sharedState₃ varstore, [⟨1⟩])
-                          | .error e => .error e
-                          | .ok (s₂, _) =>
-                            
-                            /- We note here that if:
-                                  `outOffset.toNat + (min outSize.toNat s₂.toMachineState.H_return.size) ≥ UInt256.size`
-                                then we are writing beyond the theoretical memory size limit.
-                                The yellow paper is unclear on the semantics of this (at the time of writing).
-                                We follow the https://github.com/NethermindEth/nethermind execution client (for example).
-                                And we expand the memory beyond the theoretical 2^256 bit max size if needed.
-                                In practice, this is essentially impossible to occur due to the
-                                  prohibitively large gas cost of allocating this much memory.
-                                  
-                                Similarly in other places in `primCall` where `memory₃` is constructed in this way.
-                            -/
-                            let memory₃ := s₂.toMachineState.H_return.copySlice 0 s₀.toMachineState.memory outOffset.toNat (min outSize.toNat s₂.toMachineState.H_return.size)
-                            match s₂ with
-                              | .OutOfFuel => .error .OutOfFuel
-                              | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
-                              | .Ok sharedState₂ _ =>
-                                                                
-                                -- Restore ExecutionEnv
-                                let executionEnv₃ := { sharedState₂.executionEnv with
-                                                    calldata := default,
-                                                    code := s₀.executionEnv.code,
-                                                    codeOwner := s₀.executionEnv.codeOwner,
-                                                    source := s₀.executionEnv.source,
-                                                    weiValue := s₀.executionEnv.weiValue,
-                                                }
-                                let sharedState₃ := { sharedState₂ with
-                                                        memory := memory₃,
-                                                        returnData := s₂.toMachineState.H_return,
-                                                        H_return := ByteArray.empty,
-                                                        executionEnv := executionEnv₃
-                                                    }
-                                .ok (.Ok sharedState₃ varstore, [⟨1⟩])
-          | _ => .error .InvalidArguments -- Incorrect number of arguments, this case should be impossible if the Yul code is parsed correctly. Guaranteed by the compiler.
+                          finishChildCallOutcome s₀ varstore outOffset outSize (callDispatcher fuel₁ .none s₁)
+          | _ => .error .InvalidArguments
       | .STATICCALL =>
         match args with
-          | _ :: address_arg :: inOffset :: inSize :: outOffset :: outSize :: _ =>
-            if ¬s₀.executionEnv.perm then throw .StaticModeViolation
+          | gas_arg :: address_arg :: inOffset :: inSize :: outOffset :: outSize :: _ =>
             let s₀Static : State := setStatic s₀ false
             let address := AccountAddress.ofUInt256 address_arg
             let calldata₁ := s₀Static.toMachineState.memory.readWithPadding inOffset.toNat inSize.toNat
-          
-              if s₀Static.toSharedState.executionEnv.depth ≥ 1024
-              then
-                buildContractCallEmptyReturnState s₀Static .none ⟨0⟩ -- Reached depth limit: return 0 to indicate error, with empty return data 
-              else
-                match s₀Static with
-                | .OutOfFuel => .error .OutOfFuel
-                | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
-                | .Ok sharedState varstore =>
-                    match s₀Static.sharedState.accountMap.find? address with
-                      | .none => 
-                          buildContractCallEmptyReturnState s₀Static .none ⟨1⟩ -- No contract at the provided address, return 1 to indicate success, with empty return data. (Like STOP opcode).
-                      | .some yulContract =>
-                        let executionEnv₁ := { s₀Static.executionEnv with
-                                                  calldata := calldata₁,
-                                                  code := yulContract.code,
-                                                  codeOwner := address,
-                                                  source := s₀Static.executionEnv.codeOwner,
-                                                  weiValue := ⟨0⟩
-                                                  depth := s₀Static.toSharedState.executionEnv.depth + 1
-                                              }
-                        let sharedState₁ := { sharedState with
-                                                executionEnv := executionEnv₁,
-                                                memory := ByteArray.mk #[],
-                                            }
-                        let s₁ : State := .Ok sharedState₁ default
-                        
-                        match callDispatcher fuel₁ .none s₁ with
-                          | .error (.YulHalt s₂ _) =>
-                          let memory₃ := s₂.toMachineState.H_return.copySlice 0 s₀Static.toMachineState.memory outOffset.toNat (min outSize.toNat s₂.toMachineState.H_return.size)
-                          match s₂ with
-                            | .OutOfFuel => .error .OutOfFuel
-                            | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
-                            | .Ok sharedState₂ _ =>
-                              -- Restore ExecutionEnv
-                              let executionEnv₃ := { sharedState₂.executionEnv with
-                                                    calldata := default,
-                                                    code := s₀.executionEnv.code,
-                                                    codeOwner := s₀.executionEnv.codeOwner,
-                                                    source := s₀.executionEnv.source,
-                                                    weiValue := s₀.executionEnv.weiValue,
-                                                }
-                              let sharedState₃ := { sharedState₂ with
-                                                      memory := memory₃,
-                                                      returnData := s₂.toMachineState.H_return,
-                                                      H_return := ByteArray.empty,
-                                                      executionEnv := executionEnv₃
-                                                  }
-                              .ok (setStatic (.Ok sharedState₃ varstore) s₀.executionEnv.perm, [⟨1⟩])
-                          | .error e => .error e
-                          | .ok (s₂, _) =>
-                        
-                          let memory₃ := s₂.toMachineState.H_return.copySlice 0 s₀Static.toMachineState.memory outOffset.toNat (min outSize.toNat s₂.toMachineState.H_return.size)
-                          match s₂ with
-                            | .OutOfFuel => .error .OutOfFuel
-                            | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
-                            | .Ok sharedState₂ _ =>
-                              -- Restore ExecutionEnv
-                              let executionEnv₃ := { sharedState₂.executionEnv with
-                                                    calldata := default,
-                                                    code := s₀.executionEnv.code,
-                                                    codeOwner := s₀.executionEnv.codeOwner,
-                                                    source := s₀.executionEnv.source,
-                                                    weiValue := s₀.executionEnv.weiValue,
-                                                }
-                              let sharedState₃ := { sharedState₂ with
-                                                      memory := memory₃,
-                                                      returnData := s₂.toMachineState.H_return,
-                                                      H_return := ByteArray.empty,
-                                                      executionEnv := executionEnv₃
-                                                  }
-                              .ok (setStatic (.Ok sharedState₃ varstore) s₀.executionEnv.perm, [⟨1⟩])
-          | _ => .error .InvalidArguments -- Incorrect number of arguments, this case should be impossible if the Yul code is parsed correctly. Guaranteed by the compiler.
+            if s₀Static.toSharedState.executionEnv.depth ≥ 1024 then
+              buildContractCallEmptyReturnState s₀ .none ⟨0⟩
+            else
+              match s₀Static with
+              | .OutOfFuel => .error .OutOfFuel
+              | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
+              | .Ok sharedState varstore =>
+                  match s₀Static.sharedState.accountMap.get? address with
+                    | .none =>
+                        buildContractCallEmptyReturnState s₀ .none ⟨1⟩
+                    | .some yulContract =>
+                      let callParams : YulCallParams := {
+                        gas := gas_arg, target := address, value := ⟨0⟩,
+                        inOffset := inOffset, inSize := inSize, outOffset := outOffset, outSize := outSize
+                      }
+                      let executionEnv₁ := { prepareChildCallEnv .StaticCall s₀.executionEnv callParams calldata₁ with
+                                                code := yulContract.code }
+                      let sharedState₁ := { sharedState with
+                                              executionEnv := executionEnv₁,
+                                              memory := ByteArray.mk #[] }
+                      let s₁ : State := .Ok sharedState₁ default
+                      finishChildCallOutcome s₀ varstore outOffset outSize (callDispatcher fuel₁ .none s₁)
+          | _ => .error .InvalidArguments
       | .CALLCODE =>
         match args with
-          | _ :: address_arg :: value :: inOffset :: inSize :: outOffset :: outSize :: _ =>
+          | gas_arg :: address_arg :: value :: inOffset :: inSize :: outOffset :: outSize :: _ =>
             if ¬s₀.executionEnv.perm ∧ value ≠ ⟨0⟩ then throw .StaticModeViolation
             let address := AccountAddress.ofUInt256 address_arg
             let calldata₁ := s₀.toMachineState.memory.readWithPadding inOffset.toNat inSize.toNat
             let accountMap₁Opt := (s₀.sharedState.accountMap.transferBalance .Yul s₀.executionEnv.codeOwner s₀.executionEnv.codeOwner value)
             match accountMap₁Opt with
               | .none =>
-                  buildContractCallEmptyReturnState s₀ .none ⟨0⟩ -- Insufficient funds: return 0 to indicate error, with empty return data 
+                  buildContractCallEmptyReturnState s₀ .none ⟨0⟩
               | .some accountMap₁ =>
-                if s₀.executionEnv.depth ≥ 1024
-                then
-                  buildContractCallEmptyReturnState s₀ accountMap₁ ⟨0⟩ -- Reached depth limit: return 0 to indicate error, with empty return data 
+                if s₀.executionEnv.depth ≥ 1024 then
+                  buildContractCallEmptyReturnState s₀ accountMap₁ ⟨0⟩
                 else
                   match s₀ with
                   | .OutOfFuel => .error .OutOfFuel
                   | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
                   | .Ok sharedState varstore =>
-                      match s₀.sharedState.accountMap.find? address with
-                        | .none => 
-                            buildContractCallEmptyReturnState s₀ accountMap₁ ⟨1⟩ -- No contract at the provided address, return 1 to indicate success, with empty return data. (Like STOP opcode).
+                      match s₀.sharedState.accountMap.get? address with
+                        | .none =>
+                            buildContractCallEmptyReturnState s₀ accountMap₁ ⟨1⟩
                         | .some yulContract =>
-                          let executionEnv₁ := { sharedState.executionEnv with
-                                                    calldata := calldata₁,
-                                                    code := yulContract.code,
-                                                    codeOwner := s₀.executionEnv.codeOwner,
-                                                    source := s₀.executionEnv.codeOwner,
-                                                    weiValue := value
-                                                    depth := s₀.executionEnv.depth + 1
-                                                }
+                          let callParams : YulCallParams := {
+                            gas := gas_arg, target := address, value := value,
+                            inOffset := inOffset, inSize := inSize, outOffset := outOffset, outSize := outSize
+                          }
+                          let executionEnv₁ := { prepareChildCallEnv .CallCode sharedState.executionEnv callParams calldata₁ with
+                                                    code := yulContract.code }
                           let sharedState₁ := { sharedState with
                                                   executionEnv := executionEnv₁,
                                                   memory := ByteArray.mk #[],
-                                                  accountMap := accountMap₁
-                                              }
+                                                  accountMap := accountMap₁ }
                           let s₁ : State := .Ok sharedState₁ default
-                          
-                          match callDispatcher fuel₁ yulContract.code s₁ with
-                          | .error (.YulHalt s₂ _) =>
-                            let memory₃ := s₂.toMachineState.H_return.copySlice 0 s₀.toMachineState.memory outOffset.toNat (min outSize.toNat s₂.toMachineState.H_return.size)
-                            match s₂ with
-                              | .OutOfFuel => .error .OutOfFuel
-                              | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
-                              | .Ok sharedState₂ _ =>
-                                -- Restore ExecutionEnv
-                                let executionEnv₃ := { sharedState₂.executionEnv with
-                                                    calldata := default,
-                                                    code := s₀.executionEnv.code,
-                                                    codeOwner := s₀.executionEnv.codeOwner,
-                                                    source := s₀.executionEnv.source,
-                                                    weiValue := s₀.executionEnv.weiValue,
-                                                }
-                                let sharedState₃ := { sharedState₂ with
-                                                        memory := memory₃,
-                                                        returnData := s₂.toMachineState.H_return,
-                                                        H_return := ByteArray.empty,
-                                                        executionEnv := executionEnv₃
-                                                    }
-                                .ok (.Ok sharedState₃ varstore, [⟨1⟩])
-
-                          | .error e => .error e
-                          | .ok (s₂, _) =>                            
-                            let memory₃ := s₂.toMachineState.H_return.copySlice 0 s₀.toMachineState.memory outOffset.toNat (min outSize.toNat s₂.toMachineState.H_return.size)
-                            match s₂ with
-                              | .OutOfFuel => .error .OutOfFuel
-                              | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
-                              | .Ok sharedState₂ _ =>
-                                -- Restore ExecutionEnv
-                                let executionEnv₃ := { sharedState₂.executionEnv with
-                                                    calldata := default,
-                                                    code := s₀.executionEnv.code,
-                                                    codeOwner := s₀.executionEnv.codeOwner,
-                                                    source := s₀.executionEnv.source,
-                                                    weiValue := s₀.executionEnv.weiValue,
-                                                }
-                                let sharedState₃ := { sharedState₂ with
-                                                        memory := memory₃,
-                                                        returnData := s₂.toMachineState.H_return,
-                                                        H_return := ByteArray.empty,
-                                                        executionEnv := executionEnv₃
-                                                    }
-                                .ok (.Ok sharedState₃ varstore, [⟨1⟩])
-          | _ => .error .InvalidArguments -- Incorrect number of arguments, this case should be impossible if the Yul code is parsed correctly. Guaranteed by the compiler.
+                          finishChildCallOutcome s₀ varstore outOffset outSize (callDispatcher fuel₁ yulContract.code s₁)
+          | _ => .error .InvalidArguments
       | .DELEGATECALL =>
         match args with
-          | _ :: address_arg :: inOffset :: inSize :: outOffset :: outSize :: _ =>
+          | gas_arg :: address_arg :: inOffset :: inSize :: outOffset :: outSize :: _ =>
             let address := AccountAddress.ofUInt256 address_arg
             let calldata₁ := s₀.toMachineState.memory.readWithPadding inOffset.toNat inSize.toNat
-            if s₀.executionEnv.depth ≥ 1024
-            then
-              buildContractCallEmptyReturnState s₀ .none ⟨0⟩ -- Reached depth limit: return 0 to indicate error, with empty return data 
+            if s₀.executionEnv.depth ≥ 1024 then
+              buildContractCallEmptyReturnState s₀ .none ⟨0⟩
             else
               match s₀ with
               | .OutOfFuel => .error .OutOfFuel
               | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
               | .Ok sharedState varstore =>
-                  match s₀.sharedState.accountMap.find? address with
-                    | .none => 
-                      buildContractCallEmptyReturnState s₀ .none ⟨1⟩ -- No contract at the provided address, return 1 to indicate success, with empty return data. (Like STOP opcode).
+                  match s₀.sharedState.accountMap.get? address with
+                    | .none =>
+                      buildContractCallEmptyReturnState s₀ .none ⟨1⟩
                     | .some yulContract =>
-                      let executionEnv₁ := { sharedState.executionEnv with
-                                                calldata := calldata₁,
-                                                code := yulContract.code,
-                                                codeOwner := s₀.executionEnv.codeOwner
-                                                depth := s₀.executionEnv.depth + 1
-                                            }
+                      let callParams : YulCallParams := {
+                        gas := gas_arg, target := address, value := s₀.executionEnv.weiValue,
+                        inOffset := inOffset, inSize := inSize, outOffset := outOffset, outSize := outSize
+                      }
+                      let executionEnv₁ := { prepareChildCallEnv .DelegateCall sharedState.executionEnv callParams calldata₁ with
+                                                code := yulContract.code }
                       let sharedState₁ := { sharedState with
                                               executionEnv := executionEnv₁,
-                                              memory := ByteArray.mk #[]
-                                          }
+                                              memory := ByteArray.mk #[] }
                       let s₁ : State := .Ok sharedState₁ default
-                      
-                      match callDispatcher fuel₁ yulContract.code s₁ with
-                        | .error (.YulHalt s₂ _) =>
-                        let memory₃ := s₂.toMachineState.H_return.copySlice 0 s₀.toMachineState.memory outOffset.toNat (min outSize.toNat s₂.toMachineState.H_return.size)
-                        match s₂ with
-                          | .OutOfFuel => .error .OutOfFuel
-                          | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
-                          | .Ok sharedState₂ _ =>
-                            -- Restore ExecutionEnv
-                            let executionEnv₃ := { sharedState₂.executionEnv with
-                                                    calldata := default,
-                                                    code := s₀.executionEnv.code,
-                                                    codeOwner := s₀.executionEnv.codeOwner,
-                                                    source := s₀.executionEnv.source,
-                                                    weiValue := s₀.executionEnv.weiValue,
-                                                }
-                            let sharedState₃ := { sharedState₂ with
-                                                    memory := memory₃,
-                                                    returnData := s₂.toMachineState.H_return,
-                                                    H_return := ByteArray.empty,
-                                                    executionEnv := executionEnv₃
-                                                }
-                            .ok (.Ok sharedState₃ varstore, [⟨1⟩])
-                        | .error e => .error e
-                        | .ok (s₂, _) =>                        
-                        let memory₃ := s₂.toMachineState.H_return.copySlice 0 s₀.toMachineState.memory outOffset.toNat (min outSize.toNat s₂.toMachineState.H_return.size)
-                        match s₂ with
-                          | .OutOfFuel => .error .OutOfFuel
-                          | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
-                          | .Ok sharedState₂ _ =>
-                            -- Restore ExecutionEnv
-                            let executionEnv₃ := { sharedState₂.executionEnv with
-                                                    calldata := default,
-                                                    code := s₀.executionEnv.code,
-                                                    codeOwner := s₀.executionEnv.codeOwner,
-                                                    source := s₀.executionEnv.source,
-                                                    weiValue := s₀.executionEnv.weiValue,
-                                                }
-                            let sharedState₃ := { sharedState₂ with
-                                                    memory := memory₃,
-                                                    returnData := s₂.toMachineState.H_return,
-                                                    H_return := ByteArray.empty,
-                                                    executionEnv := executionEnv₃
-                                                }
-                            .ok (.Ok sharedState₃ varstore, [⟨1⟩])
-          | _ => .error .InvalidArguments -- Incorrect number of arguments, this case should be impossible if the Yul code is parsed correctly. Guaranteed by the compiler.
+                      finishChildCallOutcome s₀ varstore outOffset outSize (callDispatcher fuel₁ yulContract.code s₁)
+          | _ => .error .InvalidArguments
       | _ => match step prim .none s₀ args with
               | .ok (s, lit) => .ok (s, lit.toList)
               | .error e => .error e
@@ -442,7 +284,7 @@ def primCall (fuel : ℕ) (s₀ : State) (prim : Operation .Yul) (args : List Li
         | .OutOfFuel => .error .OutOfFuel
         | .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
         | .Ok sharedState _ =>
-          match sharedState.accountMap.find? sharedState.executionEnv.codeOwner with
+          match sharedState.accountMap.get? sharedState.executionEnv.codeOwner with
           | .none => .error (.MissingContract (s!"{sharedState.executionEnv.codeOwner}"))
           | .some yulContract =>
             let code : YulContract := codeOverride.getD yulContract.code
@@ -505,32 +347,7 @@ def primCall (fuel : ℕ) (s₀ : State) (prim : Operation .Yul) (args : List Li
       | .succ fuel' => multifill' vars (call fuel' args yulFunctionName codeOverride s)
     | .error e => .error e
 
-  /--
-    `execSwitchCases` executes each case of a `switch` statement.
-  -/
-  def execSwitchCases (fuel : Nat) (codeOverride : Option YulContract) (s : State) : List (Literal × List Stmt) → Except Yul.Exception (List (Literal × (Except Yul.Exception State)))
-    | [] => .ok []
-    | ((val, stmts) :: cases') =>
-      match fuel with
-      | 0 => .error .OutOfFuel
-      | .succ fuel' => 
-        match exec fuel' (.Block stmts) codeOverride s with
-          | .error (.YulHalt s₂ v) =>
-            match execSwitchCases fuel' codeOverride s cases' with
-            | .error e => .error e
-            | .ok s₃ =>
-              .ok ((val, .error (.YulHalt s₂ v)) :: s₃)
-          | .error e =>
-              match execSwitchCases fuel' codeOverride s cases' with
-              | .error e => .error e
-              | .ok s₃ =>
-                .ok ((val, .error e) :: s₃)
-          | .ok s₂ =>
-            match execSwitchCases fuel' codeOverride s cases' with
-            | .error e => .error e
-              | .ok s₃ =>
-                .ok ((val, .ok s₂) :: s₃)
-
+  /-- Returns the body of the first case whose literal equals `cond`, or `none`. -/
   def selectSwitchCase (cond : Literal) : List (Literal × List Stmt) → Option (List Stmt)
     | [] => .none
     | (val, stmts) :: cases' =>
@@ -669,12 +486,95 @@ def execTopLevel (fuel : Nat) (stmt : Stmt) (s : State) : State :=
     | .error (.MissingContractFunction _) => default -- We do not model fallback functions
     | .error .InvalidExpression => default
     | .error .YulEXTCODESIZENotImplemented => default
-    | .error .Revert => s
+    | .error .InvalidMemoryAccess => default
+    | .error (.Revert _) => s
     | .error (.YulHalt s _) => s
     | .ok s => s
 
 notation "🍄" => exec
 notation "🌸" => eval
+
+-- ============================================================================
+--  GAS-ACCOUNTING YUL PRIMITIVE CALL BRIDGE (Layer 3)
+-- ============================================================================
+
+/-- Total dynamic + memory-expansion gas cost of a Yul primitive operation under `fork`. -/
+def yulOpTotalGas (fork : EVM.Fork) (s : State) (prim : Operation .Yul) (args : List Literal) : ℕ :=
+  yulPrimOpDynamicGas fork s prim args + yulMemoryExpansionGas s prim args
+
+/-- Gas-accounting wrapper around `primCall`: short-circuits `.OutOfFuel` and `.Checkpoint` states
+    like `primCall`, and otherwise deducts `yulOpTotalGas fork s₀ prim args` via `consumeYulGas`
+    before executing `primCall fuel s₁ prim args`. -/
+def primCallWithGas (fork : EVM.Fork) (fuel : ℕ) (s₀ : State)
+    (prim : Operation .Yul) (args : List Literal) :
+    Except Yul.Exception (State × List Literal) :=
+  match fuel, s₀ with
+  | 0, _ => .error .OutOfFuel
+  | _, .OutOfFuel => .error .OutOfFuel
+  | _, .Checkpoint j => .ok (.Checkpoint j, [⟨0⟩])
+  | .succ _, .Ok _ _ => do
+    let s₁ ← consumeYulGas s₀ (yulOpTotalGas fork s₀ prim args)
+    primCall fuel s₁ prim args
+
+/-- A `.Checkpoint` state short-circuits `primCallWithGas` without charging gas. -/
+theorem primCallWithGas_checkpoint (fork : EVM.Fork) (fuel : ℕ) (j : Jump)
+    (prim : Operation .Yul) (args : List Literal) :
+    primCallWithGas fork (fuel + 1) (.Checkpoint j) prim args = .ok (.Checkpoint j, [⟨0⟩]) := rfl
+
+/-- When an active `.Ok` state has `gasAvailable.toNat < yulOpTotalGas fork s₀ prim args`,
+    `primCallWithGas` fails with `.error .OutOfFuel`. -/
+theorem primCallWithGas_outOfFuel_of_lt (fork : EVM.Fork) (fuel : ℕ)
+    (shared : EvmYul.SharedState .Yul) (store : VarStore)
+    (prim : Operation .Yul) (args : List Literal)
+    (hLt : shared.toMachineState.gasAvailable.toNat < yulOpTotalGas fork (.Ok shared store) prim args) :
+    primCallWithGas fork (fuel + 1) (.Ok shared store) prim args = .error .OutOfFuel := by
+  unfold primCallWithGas
+  have hErr :
+      consumeYulGas (.Ok shared store) (yulOpTotalGas fork (.Ok shared store) prim args) =
+        .error .OutOfFuel :=
+    (consumeYulGas_outOfFuel_iff (.Ok shared store)
+      (yulOpTotalGas fork (.Ok shared store) prim args)).mpr hLt
+  rw [hErr]
+  rfl
+
+/-- When an active `.Ok` state has sufficient gas (`yulOpTotalGas ≤ gasAvailable`),
+    `primCallWithGas` deducts the exact operation gas and delegates to `primCall`. -/
+theorem primCallWithGas_eq_primCall_of_le (fork : EVM.Fork) (fuel : ℕ)
+    (shared : EvmYul.SharedState .Yul) (store : VarStore)
+    (prim : Operation .Yul) (args : List Literal)
+    (hLe : yulOpTotalGas fork (.Ok shared store) prim args ≤ shared.toMachineState.gasAvailable.toNat) :
+    primCallWithGas fork (fuel + 1) (.Ok shared store) prim args =
+      primCall (fuel + 1)
+        ((State.Ok shared store).setMachineState
+          { shared.toMachineState with
+            gasAvailable := UInt256.ofNat
+              (shared.toMachineState.gasAvailable.toNat -
+                yulOpTotalGas fork (.Ok shared store) prim args) })
+        prim args := by
+  unfold primCallWithGas consumeYulGas
+  simp [State.toMachineState, hLe, Bind.bind, Except.bind]
+
+/-- Child `.Revert data` in `finishChildCallOutcome` rolls back world state to `s₀`, copies
+    `data` to the output area, makes it the returndata, and pushes `0`. -/
+theorem finishChildCallOutcome_revert_rolls_back {α : Type}
+    (shared₀ : EvmYul.SharedState .Yul) (varstore : VarStore) (outOffset outSize : UInt256)
+    (data : ByteArray) :
+    finishChildCallOutcome (.Ok shared₀ varstore) varstore outOffset outSize
+      (.error (.Revert data) : Except Yul.Exception (State × α)) =
+    .ok (.Ok { shared₀ with
+                memory := data.copySlice 0 shared₀.memory outOffset.toNat
+                  (min outSize.toNat data.size)
+                H_return := ByteArray.empty
+                returnData := data } varstore, [⟨0⟩]) := by
+  rfl
+
+/-- Child `.StaticModeViolation` in `finishChildCallOutcome` rolls back world state to `s₀` and pushes `0`. -/
+theorem finishChildCallOutcome_staticViolation_rolls_back {α : Type}
+    (shared₀ : EvmYul.SharedState .Yul) (varstore : VarStore) (outOffset outSize : UInt256) :
+    finishChildCallOutcome (.Ok shared₀ varstore) varstore outOffset outSize
+      (.error .StaticModeViolation : Except Yul.Exception (State × α)) =
+    .ok (.Ok { shared₀ with H_return := ByteArray.empty, returnData := ByteArray.empty } varstore, [⟨0⟩]) := by
+  rfl
 
 end Yul
 
