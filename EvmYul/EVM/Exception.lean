@@ -15,6 +15,8 @@ inductive ExecutionException where
   | StaticModeViolation
 deriving BEq
 
+abbrev ExecutionException.OutOfGas : ExecutionException := .OutOfGass
+
 instance : Repr ExecutionException where
   reprPrec s _ :=
     match s with

@@ -96,17 +96,20 @@ def fetchInstr (I : EvmYul.ExecutionEnv .EVM) (pc : UInt256) :
                Except EVM.ExecutionException (Operation .EVM × Option (UInt256 × Nat)) :=
   decode I.code pc |>.option (.error .StackUnderflow) Except.ok
 
-/-- Fuel-bounded (not `partial`) so that the kernel can evaluate it. `c.size + 1` steps are enough,
-since every step moves `i` past one byte and `c.get?` fails beyond `c.size`. -/
-def D_J_aux (c : ByteArray) (i : UInt256) (result : Array UInt256) : Nat → Array UInt256
-  | 0 => result
-  | n + 1 =>
-    match c.get? i.toNat >>= EvmYul.EVM.parseInstr with
+def D_J_aux (c : ByteArray) : (fuel : Nat) → (i : Nat) → (result : Array UInt256) → Array UInt256
+  | 0, _, result => result
+  | fuel + 1, i, result =>
+    if h : i < c.size then
+      match EvmYul.EVM.parseInstr c[i] with
       | none => result
-      | some cᵢ => D_J_aux c (N i cᵢ) (if cᵢ = .JUMPDEST then result.push i else result) n
+      | some cᵢ =>
+        D_J_aux c fuel (i + 1 + argOnNBytesOfInstr cᵢ)
+          (if cᵢ = .JUMPDEST then result.push (.ofNat i) else result)
+    else
+      result
 
 def D_J (c : ByteArray) (i : UInt256) : Array UInt256 :=
-  D_J_aux c i #[] (c.size + 1)
+  D_J_aux c c.size i.toNat #[]
 
 example : D_J ⟨#[0x5b, 0x60, 0x5b, 0x5b]⟩ ⟨0⟩ = #[⟨0⟩, ⟨3⟩] := by decide
 
@@ -116,7 +119,7 @@ private def BitVec.ofFn {k} (x : Fin k → Bool) : BitVec k :=
           (·.1) <| vec.toList.foldl (init := (0, 0)) λ (res, i) bit ↦ (res + 2^i * bit.toNat, i + 1)
 
 def byteAt (μ₀ μ₁ : UInt256) : UInt256 :=
-  let v₁ : BitVec 256 := BitVec.ofNat 256 μ₁.1
+  let v₁ : BitVec 256 := μ₁.toBitVec
   let vᵣ : BitVec 256 := BitVec.ofFn (λ i => if i >= 248 && μ₀ < ⟨32⟩
                                              then v₁.getLsbD i
                                              else false)
@@ -168,7 +171,7 @@ def call (fuel : Nat)
       let i := evmState.memory.readWithPadding inOffset.toNat inSize.toNat
       let A' := evmState.addAccessedAccount t |>.substate
       let (cA, σ', g', A', z, o) ← do
-        if value ≤ (σ.find? Iₐ |>.option ⟨0⟩ (·.balance)) ∧ Iₑ < 1024 then
+        if value ≤ (σ.get? Iₐ |>.option ⟨0⟩ (·.balance)) ∧ Iₑ < 1024 then
           let resultOfΘ ←
             Θ (fuel := f)
               blobVersionedHashes
@@ -203,7 +206,7 @@ def call (fuel : Nat)
       let μ'_g := μ'ₘ.gasAvailable + g' -- Ccall is subtracted in X as part of C
 
       let codeExecutionFailed   : Bool := !z
-      let notEnoughFunds        : Bool := value > (σ.find? evmState.executionEnv.codeOwner |>.elim ⟨0⟩ (·.balance)) -- TODO - Unify condition with CREATE.
+      let notEnoughFunds        : Bool := value > (σ.get? evmState.executionEnv.codeOwner |>.elim ⟨0⟩ (·.balance)) -- TODO - Unify condition with CREATE.
       let callDepthLimitReached : Bool := evmState.executionEnv.depth == 1024
       let x : UInt256 := if codeExecutionFailed || notEnoughFunds || callDepthLimitReached then ⟨0⟩ else ⟨1⟩ -- where x = 0 if the code execution for this operation failed, or if μs[2] > σ[Ia]b (not enough funds) or Ie = 1024 (call depth limit reached); x = 1 otherwise.
 
@@ -250,14 +253,14 @@ def step (fuel : ℕ) (gasCost : ℕ) (instr : Option (Operation .EVM × Option 
             let Iₒ := evmState.executionEnv.sender
             let Iₑ := evmState.executionEnv.depth
             let σ := evmState.accountMap
-            let σ_Iₐ : Account .EVM := σ.find? Iₐ |>.getD default
+            let σ_Iₐ : Account .EVM := σ.get? Iₐ |>.getD default
             let σStar := σ.insert Iₐ {σ_Iₐ with nonce := σ_Iₐ.nonce + ⟨1⟩}
 
             let (a, evmState', g', z, o)
                   : (AccountAddress × EVM.State × UInt256 × Bool × ByteArray)
               :=
               if σ_Iₐ.nonce.toNat ≥ 2^64-1 then (default, evmState, .ofNat (L evmState.gasAvailable.toNat), False, .empty) else
-              if μ₀ ≤ (σ.find? Iₐ |>.option ⟨0⟩ (·.balance)) ∧ Iₑ < 1024 ∧ i.size ≤ 49152 then
+              if μ₀ ≤ (σ.get? Iₐ |>.option ⟨0⟩ (·.balance)) ∧ Iₑ < 1024 ∧ i.size ≤ 49152 then
                 let Λ :=
                   Lambda f
                     evmState.executionEnv.blobVersionedHashes
@@ -293,7 +296,7 @@ def step (fuel : ℕ) (gasCost : ℕ) (instr : Option (Operation .EVM × Option 
               else
                 (0, evmState, .ofNat (L evmState.gasAvailable.toNat), False, .empty)
             let x : UInt256 :=
-              let balance := σ.find? Iₐ |>.option ⟨0⟩ (·.balance)
+              let balance := σ.get? Iₐ |>.option ⟨0⟩ (·.balance)
                 if z = false ∨ Iₑ = 1024 ∨ μ₀ > balance ∨ i.size > 49152 then ⟨0⟩ else .ofNat a
             let newReturnData : ByteArray := if z then .empty else o
             if (evmState.gasAvailable + g').toNat < L (evmState.gasAvailable.toNat) then
@@ -320,11 +323,11 @@ def step (fuel : ℕ) (gasCost : ℕ) (instr : Option (Operation .EVM × Option 
             let Iₒ := evmState.executionEnv.sender
             let Iₑ := evmState.executionEnv.depth
             let σ := evmState.accountMap
-            let σ_Iₐ : Account .EVM := σ.find? Iₐ |>.getD default
+            let σ_Iₐ : Account .EVM := σ.get? Iₐ |>.getD default
             let σStar := σ.insert Iₐ {σ_Iₐ with nonce := σ_Iₐ.nonce + ⟨1⟩}
             let (a, evmState', g', z, o) : (AccountAddress × EVM.State × UInt256 × Bool × ByteArray) :=
               if σ_Iₐ.nonce.toNat ≥ 2^64-1 then (default, evmState, .ofNat (L evmState.gasAvailable.toNat), False, .empty) else
-              if μ₀ ≤ (σ.find? Iₐ |>.option ⟨0⟩ (·.balance)) ∧ Iₑ < 1024 ∧ i.size ≤ 49152 then
+              if μ₀ ≤ (σ.get? Iₐ |>.option ⟨0⟩ (·.balance)) ∧ Iₑ < 1024 ∧ i.size ≤ 49152 then
                 let Λ :=
                   Lambda f
                     evmState.executionEnv.blobVersionedHashes
@@ -351,7 +354,7 @@ def step (fuel : ℕ) (gasCost : ℕ) (instr : Option (Operation .EVM × Option 
               else
                 (0, evmState, .ofNat (L evmState.gasAvailable.toNat), False, .empty)
             let x : UInt256 :=
-              let balance := σ.find? Iₐ |>.option ⟨0⟩ (·.balance)
+              let balance := σ.get? Iₐ |>.option ⟨0⟩ (·.balance)
                 if z = false ∨ Iₑ = 1024 ∨ μ₀ > balance ∨ i.size > 49152 then ⟨0⟩ else .ofNat a
             let newReturnData : ByteArray := if z then .empty else o
             if (evmState.gasAvailable + g').toNat < L evmState.gasAvailable.toNat then
@@ -530,7 +533,7 @@ def X (fuel : ℕ) (validJumps : Array UInt256) (evmState : State)
 -/
 def Ξ -- Type `Ξ` using `\GX` or `\Xi`
   (fuel : ℕ)
-  (createdAccounts : RBTree.RBSet AccountAddress compare)
+  (createdAccounts : Std.TreeSet AccountAddress compare)
   (genesisBlockHeader : BlockHeader)
   (blocks : ProcessedBlocks)
   (σ : AccountMap .EVM)
@@ -541,7 +544,7 @@ def Ξ -- Type `Ξ` using `\GX` or `\Xi`
     :
   Except
     EVM.ExecutionException
-    (ExecutionResult (RBTree.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate))
+    (ExecutionResult (Std.TreeSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate))
 := do
   match fuel with
     | 0 => .error .OutOfFuel
@@ -568,7 +571,7 @@ def Ξ -- Type `Ξ` using `\GX` or `\Xi`
 def Lambda
   (fuel : ℕ)
   (blobVersionedHashes : List ByteArray)
-  (createdAccounts : RBTree.RBSet AccountAddress compare) -- needed for EIP-6780
+  (createdAccounts : Std.TreeSet AccountAddress compare) -- needed for EIP-6780
   (genesisBlockHeader : BlockHeader)
   (blocks : ProcessedBlocks)
   (σ : AccountMap .EVM)
@@ -587,7 +590,7 @@ def Lambda
   :
   Except EVM.ExecutionException
     ( AccountAddress
-    × RBTree.RBSet AccountAddress compare
+    × Std.TreeSet AccountAddress compare
     × AccountMap .EVM
     × UInt256
     × Substate
@@ -602,7 +605,7 @@ def Lambda
   -- EIP-3860 (includes EIP-170)
   -- https://eips.ethereum.org/EIPS/eip-3860
 
-  let n : UInt256 := (σ.find? s |>.option ⟨0⟩ (·.nonce)) - ⟨1⟩
+  let n : UInt256 := (σ.get? s |>.option ⟨0⟩ (·.nonce)) - ⟨1⟩
   let lₐ ← L_A s n ζ i
   let a : AccountAddress := -- (94) (95)
     (ffi.KEC lₐ).extract 12 32 /- 160 bits = 20 bytes -/
@@ -611,21 +614,18 @@ def Lambda
   -- A* (97)
   let AStar := A.addAccessedAccount a
   -- σ*
-  let existentAccount := σ.findD a default
+  let existentAccount := σ.getD a default
 
   /-
-    https://eips.ethereum.org/EIPS/eip-7610
-    If a contract creation is attempted due to a creation transaction,
-    the CREATE opcode, the CREATE2 opcode, or any other reason,
-    and the destination address already has either a nonzero nonce,
-    a nonzero code length, or non-empty storage, then the creation MUST throw
-    as if the first byte in the init code were an invalid opcode.
+    Osaka follows EIP-684: only a nonzero nonce or nonempty code causes a
+    creation collision. A storage-only preexisting account is replaced with
+    fresh persistent storage when constructor execution succeeds. Future
+    storage-collision proposals must not be applied without a fork gate.
   -/
   let (i, createdAccounts) :=
     if
       existentAccount.nonce ≠ ⟨0⟩
         || existentAccount.code.size ≠ 0
-        || existentAccount.storage != default
     then
       (⟨#[0xfe]⟩, createdAccounts)
     else (i, createdAccounts.insert a)
@@ -634,11 +634,12 @@ def Lambda
     { existentAccount with
         nonce := existentAccount.nonce + ⟨1⟩
         balance := v + existentAccount.balance
+        storage := default
     }
 
   -- If `v` ≠ 0 then the sender must have passed the `INSUFFICIENT_ACCOUNT_FUNDS` check
   let σStar :=
-    match σ.find? s with
+    match σ.get? s with
       | none =>  σ
       | some ac =>
         σ.insert s {ac with balance := ac.balance - v}
@@ -669,7 +670,7 @@ def Lambda
 
       let F : Bool := Id.run do -- (118)
         let F₀ : Bool :=
-          match σ.find? a with
+          match σ.get? a with
           | .some ac => ac.code ≠ .empty ∨ ac.nonce ≠ ⟨0⟩
           | .none => false
         let F₂ : Bool := gStarStar.toNat < c
@@ -680,7 +681,7 @@ def Lambda
 
       let σ' : AccountMap .EVM := -- (115)
         if F then σ else
-          let newAccount' := σStarStar.findD a default
+          let newAccount' := σStarStar.getD a default
           σStarStar.insert a {newAccount' with code := returnedData}
 
       -- (114)
@@ -722,7 +723,7 @@ NB - This is implemented using the 'boolean' fragment with ==, <=, ||, etc.
 -/
 def Θ (fuel : Nat)
       (blobVersionedHashes : List ByteArray)
-      (createdAccounts : RBTree.RBSet AccountAddress compare)
+      (createdAccounts : Std.TreeSet AccountAddress compare)
       (genesisBlockHeader : BlockHeader)
       (blocks : ProcessedBlocks)
       (σ  : AccountMap .EVM)
@@ -741,7 +742,7 @@ def Θ (fuel : Nat)
       (H : BlockHeader)
       (w  : Bool)
         :
-      Except EVM.ExecutionException (RBTree.RBSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate × Bool × ByteArray)
+      Except EVM.ExecutionException (Std.TreeSet AccountAddress compare × AccountMap .EVM × UInt256 × Substate × Bool × ByteArray)
 :=
   match fuel with
     | 0 => .error .OutOfFuel
@@ -749,9 +750,9 @@ def Θ (fuel : Nat)
 
   -- (124) (125) (126)
   let σ'₁ :=
-    match σ.find? r with
+    match σ.get? r with
       | none =>
-        if v != (⟨0⟩ : UInt256) then
+        if v != UInt256.ofNat 0 then
           σ.insert r { (default : Account .EVM) with balance := v}
         else
           σ
@@ -760,7 +761,7 @@ def Θ (fuel : Nat)
 
   -- If `v` ≠ 0 then the sender must have passed the `INSUFFICIENT_ACCOUNT_FUNDS` check
   let σ₁ :=
-    match σ'₁.find? s with
+    match σ'₁.get? s with
       | none => σ'₁
       | some acc =>
         σ'₁.insert s { acc with balance := acc.balance - v}
@@ -822,7 +823,7 @@ def Θ (fuel : Nat)
 
 end
 
-open RBTree (RBMap RBSet)
+open Std (TreeMap TreeSet)
 
 
 -- Type Υ using \Upsilon or \GU
@@ -838,7 +839,7 @@ def Υ (fuel : ℕ)
 := do
   let g₀ : ℕ := EVM.intrinsicGas T
   -- "here can be no invalid transactions from this point"
-  let senderAccount := (σ.find? S_T).get!
+  let senderAccount := (σ.get? S_T).get!
   -- The priority fee (67)
   let f :=
     match T with
@@ -872,7 +873,7 @@ def Υ (fuel : ℕ)
   let a := -- (80)
     A0.accessedAccounts.insert S_T
       |>.insert H.beneficiary
-      |>.union <| RBTree.RBSet.ofList (accessList.map Prod.fst) compare
+      |>.union <| Std.TreeSet.ofList (accessList.map Prod.fst) compare
   -- (81)
   let g := .ofNat <| T.base.gasLimit.toNat - g₀
   let AStarₐ := -- (79)
@@ -880,8 +881,8 @@ def Υ (fuel : ℕ)
       | some t => a.insert t
       | none => a
   let AStar := -- (77)
-    { A0 with accessedAccounts := AStarₐ, accessedStorageKeys := RBTree.RBSet.ofList AStar_K Substate.storageKeysCmp}
-  let createdAccounts : RBTree.RBSet AccountAddress compare := .empty
+    { A0 with accessedAccounts := AStarₐ, accessedStorageKeys := Std.TreeSet.ofList AStar_K Substate.storageKeysCmp}
+  let createdAccounts : Std.TreeSet AccountAddress compare := .empty
   let (/- provisional state -/ σ_P, g', A, z) ← -- (76)
     match T.base.recipient with
       | none => do
@@ -944,10 +945,10 @@ def Υ (fuel : ℕ)
     if beneficiaryFee != ⟨0⟩ then
       σStar.increaseBalance .EVM H.beneficiary beneficiaryFee
     else σStar
-  let σ' := A.selfDestructSet.1.foldl RBTree.RBMap.erase σStar' -- (87)
+  let σ' := A.selfDestructSet.foldl (fun state addr => state.erase addr) σStar' -- (87)
   let deadAccounts := A.touchedAccounts.filter (State.dead σStar' ·)
-  let σ' := deadAccounts.foldl RBTree.RBMap.erase σ' -- (88)
-  let σ' := σ'.map λ (addr, acc) ↦ (addr, { acc with tstorage := .empty})
+  let σ' := deadAccounts.foldl (fun state addr => state.erase addr) σ' -- (88)
+  let σ' := σ'.foldl (fun state addr acc => state.insert addr { acc with tstorage := .empty }) ∅
   .ok (σ', A, z, T.base.gasLimit - gStar)
 end EVM
 

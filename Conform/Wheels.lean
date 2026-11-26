@@ -1,7 +1,7 @@
 import Lean.Data.Json
 import EvmYul.UInt256
 import EvmYul.Wheels
-import Batteries.Recycling.RBTree
+import Std.Data.TreeMap
 
 import Mathlib.Data.Multiset.Sort
 
@@ -31,9 +31,9 @@ def getObjValAsD! (j : Json) (α : Type) [FromJson α] [Inhabited α] (k : Strin
   getObjValAsD j α k default
 
 def getObjVals?
-  (self : Json) (α β : Type) [Ord α] [FromJson α] [FromJson β] : Except String (RBTree.RBMap α β compare) := do
-  let keys ← Array.map Prod.fst <$> (fun obj => obj.toArray) <$> self.getObj?
-  let mut result : RBTree.RBMap α β compare := ∅
+  (self : Json) (α β : Type) [Ord α] [FromJson α] [FromJson β] : Except String (Std.TreeMap α β compare) := do
+  let keys : Array String ← Array.map Prod.fst <$> Std.TreeMap.Raw.toArray <$> self.getObj?
+  let mut result : Std.TreeMap α β compare := ∅
   for k in keys do
     if let .ok key := FromJson.fromJson? (Json.str k) then
     result := result.insert key (← self.getObjValAs? β k)
@@ -106,7 +106,3 @@ def computeToList! {α}
                    [LE α] [IsTrans α (· ≤ ·)] [Std.Antisymm (α := α) (· ≤ ·)] [Std.Total (α := α) (· ≤ ·)]
                    [DecidableRel (α := α) (· ≤ ·)] (m : Multiset α) : List α :=
   m.sort (· ≤ ·)
-
-def RBTree.RBMap.partition {α β : Type} {cmp : α → α → Ordering}
-  (t : RBTree.RBMap α β cmp) (p : α → β → Bool) : RBTree.RBMap α β cmp × RBTree.RBMap α β cmp :=
-  (t.filter p, t.filter (λ k v ↦ not (p k v)))

@@ -1,6 +1,7 @@
 import EvmYul.EVM.State
 import EvmYul.EVM.Semantics
 import EvmYul.EVM.Gas
+import EvmYul.Specs.ConformMultiFork
 import EvmYul.Wheels
 
 import EvmYul.State.TransactionOps
@@ -73,7 +74,7 @@ Now that this is not a `Finmap`, this is probably defined somewhere in the API, 
 def storageComplement (m₁ m₂ : PersistentAccountMap .EVM) : PersistentAccountMap .EVM := Id.run do
   let mut result : PersistentAccountMap .EVM := m₁
   for ⟨k₂, v₂⟩ in m₂.toList do
-    match m₁.find? k₂ with
+    match m₁.get? k₂ with
     | .none => continue
     | .some v₁ => if v₁ == v₂ then result := result.erase k₂ else continue
   return result
@@ -118,7 +119,7 @@ def executeTransaction
   (header : BlockHeader)
   : Except EVM.Exception EVM.State
 := do
-  let _fuel : ℕ := s.accountMap.find? sender |>.elim ⟨0⟩ (·.balance) |>.toNat
+  let _fuel : ℕ := s.accountMap.get? sender |>.elim ⟨0⟩ (·.balance) |>.toNat
 
   let (ypState, substate, statusCode, totalGasUsed) ←
     EVM.Υ _fuel
@@ -197,6 +198,7 @@ def validateTransaction
   (header : BlockHeader)
   (totalGasUsedInBlock : ℕ)
   (T : Transaction)
+  (fork : EVM.Fork := .Cancun)
   : Except EVM.Exception AccountAddress
 := do
   let H_f := header.baseFeePerGas
@@ -218,7 +220,7 @@ def validateTransaction
   if H_f > maxFeePerGas.toNat then
     throw <| .TransactionException .INSUFFICIENT_MAX_FEE_PER_GAS
 
-  let g₀ : ℕ := EVM.intrinsicGas T
+  let g₀ : ℕ := EVM.intrinsicGas T fork
   if T.base.gasLimit.toNat < g₀ then
     throw <| .TransactionException .INTRINSIC_GAS_TOO_LOW
   match T with
@@ -280,7 +282,7 @@ def validateTransaction
 
   -- "Also, with a slight abuse of notation ... "
   let (senderCode, senderNonce, senderBalance) :=
-    match σ.find? S_T with
+    match σ.get? S_T with
       | some sender => (sender.code, sender.nonce, sender.balance)
       | none =>
         dbg_trace s!"could not find sender {EvmYul.toHex S_T.toByteArray}"
@@ -462,6 +464,7 @@ def processBlocks
   (pre : Pre)
   (blocks : RawBlocks)
   (genesisRLP : ByteArray)
+  (fork : EVM.Fork := .Cancun)
   : Except EVM.Exception EVM.State
 := do
   let (genesisHash, genesisBlockHeader, _) ← deserializeBlock genesisRLP
@@ -483,7 +486,7 @@ def processBlocks
           let block ← deserializeRawBlock rawBlock
           let parent ←
             validateHeaderBeforeTransactions accState.blocks block.blockHeader
-          let accState ← processBlock {accState with accountMap := parent.σ} block
+          let accState ← processBlock {accState with accountMap := parent.σ} block fork
           validateBlock accState parent.blockHeader block
           if ¬block.exception.isEmpty then
             throw <| .MissedExpectedException block.exception
@@ -508,6 +511,7 @@ def processBlocks
   processBlock
     (s₀ : EVM.State)
     (block : DeserializedBlock)
+    (fork : EVM.Fork)
     : Except EVM.Exception EVM.State
   := do
     -- Beacon call
@@ -516,7 +520,7 @@ def processBlocks
         0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02
       let SYSTEM_ADDRESS : AccountAddress :=
         0xfffffffffffffffffffffffffffffffffffffffe
-      match s₀.accountMap.find? BEACON_ROOTS_ADDRESS with
+      match s₀.accountMap.get? BEACON_ROOTS_ADDRESS with
         | none => pure s₀
         | some roots =>
           let beaconRootsAddressCode := roots.code
@@ -561,6 +565,7 @@ def processBlocks
               block.blockHeader
               s'.totalGasUsedInBlock
               trans
+              fork
           executeTransaction trans S_T s' block.blockHeader
         )
         {s with totalGasUsedInBlock := 0, transactionReceipts := .empty}
@@ -576,10 +581,10 @@ def processBlocks
 
 NB we can throw away the final state if it coincided with the expected one, hence `.none`.
 -/
-def preImpliesPost (entry : TestEntry)
+def preImpliesPost (entry : TestEntry) (fork : EVM.Fork := .Cancun)
   : Except EVM.Exception (Option (PersistentAccountMap .EVM))
 := do
-    let resultState ← processBlocks entry.pre entry.blocks entry.genesisRLP
+    let resultState ← processBlocks entry.pre entry.blocks entry.genesisRLP fork
     let lastAccountMap :=
       resultState.blocks.findRev? (·.hash == entry.lastblockhash)
       |>.option resultState.accountMap ProcessedBlock.σ
@@ -611,9 +616,9 @@ instance (priority := high) : Repr (PersistentAccountMap .EVM) := ⟨λ m _ ↦
         result := result ++ s!"{sk} → {sv}\n"
     return result⟩
  
-def processTest (entry : TestEntry) (isTimed : Option (Nat × TestId) := .none) (verbose := true) : IO TestResult := do
+def processTest (entry : TestEntry) (isTimed : Option (Nat × TestId) := .none) (verbose := true) (fork : EVM.Fork := .Cancun) : IO TestResult := do
   let tα ← if isTimed.isSome then IO.monoMsNow else pure 0
-  let result := preImpliesPost entry
+  let result := preImpliesPost entry fork
   let tω ← if isTimed.isSome then IO.monoMsNow else pure 0
   if let .some (thread, filepath, testname) := isTimed then
     IO.eprint s!"#{if thread / 10 == 1 then "" else " "}{thread} "
@@ -643,8 +648,12 @@ def processTests (tests : Array TestId) (isTimed : Option Nat := .none) :
     match test with
     | .error _ => IO.eprintln s!"Cannot parse: {testId}"
                   discarded := discarded.push testId
-    | .ok test => if test.network.startsWith "Cancun"
-                  then results := results.push (testId, ←processTest test <| isTimed <&> (·, testId))
+    | .ok test =>
+      match EVM.Fork.ofNetworkString test.network with
+      | none => pure ()
+      | some fork =>
+        results := results.push
+          (testId, ←processTest test (isTimed <&> (·, testId)) (fork := fork))
   return (discarded, results)
 
 end Conform

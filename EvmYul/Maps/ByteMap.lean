@@ -17,7 +17,7 @@ a'la `Finmap`.
 TODO - All of this is very ugly.
 -/
 
-import Batteries.Recycling.RBTree
+import Std.Data.TreeMap
 
 import EvmYul.Wheels
 
@@ -25,7 +25,7 @@ namespace EvmYul
 
 section RemoveLater
 
-abbrev ByteMap := RBTree.RBMap UInt256 UInt8 compare
+abbrev ByteMap := Std.TreeMap UInt256 UInt8 compare
 
 end RemoveLater
 
